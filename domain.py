@@ -6,14 +6,14 @@
 
 def find_vip_row_by_code(code_vip: str) -> Tuple[Optional[int], Optional[Dict[str, Any]]]:
     code = normalize_code(code_vip)
-    rows = ws_vip.get_all_records()
+    rows = services.ws("VIP").get_all_records()
     for idx, r in enumerate(rows, start=2):
         if normalize_code(str(r.get("code_vip", ""))) == code:
             return idx, r
     return None, None
 
 def find_vip_row_by_discord_id(discord_id: int) -> Tuple[Optional[int], Optional[Dict[str, Any]]]:
-    rows = ws_vip.get_all_records()
+    rows = services.ws("VIP").get_all_records()
     for idx, r in enumerate(rows, start=2):
         if str(r.get("discord_id", "")).strip() == str(discord_id):
             return idx, r
@@ -21,7 +21,7 @@ def find_vip_row_by_discord_id(discord_id: int) -> Tuple[Optional[int], Optional
 
 def find_vip_row_by_pseudo(pseudo: str) -> Tuple[Optional[int], Optional[Dict[str, Any]]]:
     target = normalize_name(pseudo)
-    rows = ws_vip.get_all_records()
+    rows = services.ws("VIP").get_all_records()
     for idx, r in enumerate(rows, start=2):
         if normalize_name(str(r.get("pseudo", ""))) == target:
             return idx, r
@@ -38,7 +38,7 @@ def find_vip_row_by_code_or_pseudo(term: str) -> Tuple[Optional[int], Optional[D
 
 def get_rank_among_active(code_vip: str) -> Tuple[int, int]:
     code = normalize_code(code_vip)
-    rows = ws_vip.get_all_records()
+    rows = services.ws("VIP").get_all_records()
     active = []
     for r in rows:
         status = str(r.get("status", "ACTIVE")).strip().upper()
@@ -245,7 +245,7 @@ def add_points_by_action(code_vip: str, action_key: str, qty: int, staff_id: int
     old_level = calc_level(old_points)
     new_level = calc_level(new_points)
 
-    ws_vip.batch_update([
+    services.ws("VIP").batch_update([
         {"range": f"D{row_i}", "values": [[new_points]]},
         {"range": f"E{row_i}", "values": [[new_level]]},
     ])
