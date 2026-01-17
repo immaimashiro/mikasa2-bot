@@ -109,7 +109,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 
 # IDs rôles / channels
 EMPLOYEE_ROLE_ID = int(os.getenv("EMPLOYEE_ROLE_ID", "1413872714032222298"))
-HG_ROLE_ID = int(os.getenv("HG_ROLE_ID", "1413856422659358741"))
+HG_ROLE_ID = int(os.getenv("HG_ROLE_ID", "1455950271615209492"))
 
 STAFF_CHANNEL_ID = int(os.getenv("STAFF_CHANNEL_ID", "0"))     # salon staff
 ANNOUNCE_CHANNEL_ID = int(os.getenv("ANNOUNCE_CHANNEL_ID", "0"))  # salon annonce (défis / level-up)
