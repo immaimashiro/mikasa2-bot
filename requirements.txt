@@ -1,0 +1,12 @@
+discord.py
+gspread
+google-auth
+python-dotenv
+Pillow
+google-api-python-client
+google-auth-httplib2
+boto3
+botocore
+apscheduler
+discord.py>=2.3.2
+pytz
