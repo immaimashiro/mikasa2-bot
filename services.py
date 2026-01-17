@@ -1,7 +1,11 @@
 # services.py
 # -*- coding: utf-8 -*-
 
-import os, io, time, random, string, asyncio
+import os
+import io
+import time
+import random
+import string
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -18,12 +22,26 @@ from botocore.exceptions import ClientError
 from PIL import Image, ImageDraw, ImageFont
 
 
+# ----------------------------
+# Config / helpers
+# ----------------------------
+PARIS_TZ = ZoneInfo(os.getenv("PARIS_TZ", "Europe/Paris"))
+
 CAT_EMOJIS = ["🐱", "🐾", "😺", "😸", "😼", "🐈"]
 
 def catify(text: str, chance: float = 0.20) -> str:
     if random.random() < chance:
         return f"{text} {random.choice(CAT_EMOJIS)}"
     return text
+
+def now_fr() -> datetime:
+    return datetime.now(tz=PARIS_TZ)
+
+def fmt_fr(dt: datetime) -> str:
+    return dt.astimezone(PARIS_TZ).strftime("%d/%m %H:%M")
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 def normalize_name(name: str) -> str:
     if not name:
@@ -39,7 +57,7 @@ def display_name(name: str) -> str:
     s = str(name).replace("_", " ").strip()
     while "  " in s:
         s = s.replace("  ", " ")
-    return " ".join(w.capitalize() for w in s.split(" "))
+    return " ".join(w.capitalize() for w in s.split(" ") if w)
 
 def normalize_code(code: str) -> str:
     code = (code or "").strip().upper().replace(" ", "")
@@ -51,8 +69,12 @@ def gen_code() -> str:
     b = "".join(random.choice(alphabet) for _ in range(4))
     return f"SUB-{a}-{b}"
 
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+def parse_iso_dt(s: str) -> Optional[datetime]:
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return dt.astimezone(PARIS_TZ)
+    except Exception:
+        return None
 
 def extract_tag(text: str, prefix: str) -> Optional[str]:
     if not text:
@@ -63,122 +85,174 @@ def extract_tag(text: str, prefix: str) -> Optional[str]:
             return tok.split(":", 1)[1].strip() if ":" in tok else None
     return None
 
-def parse_iso_dt(s: str, tz: ZoneInfo) -> Optional[datetime]:
+def last_friday_17(now: datetime) -> datetime:
+    target_weekday = 4  # Friday
+    candidate = now.astimezone(PARIS_TZ).replace(hour=17, minute=0, second=0, microsecond=0)
+    days_back = (candidate.weekday() - target_weekday) % 7
+    candidate = candidate - timedelta(days=days_back)
+    if now < candidate:
+        candidate -= timedelta(days=7)
+    return candidate
+
+def parse_dt_fr_env(name: str) -> Optional[datetime]:
+    s = (os.getenv(name) or "").strip()
+    if not s:
+        return None
     try:
-        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-        return dt.astimezone(tz)
+        return datetime.strptime(s, "%Y-%m-%d %H:%M").replace(tzinfo=PARIS_TZ)
     except Exception:
         return None
 
-# --------------------------
+def challenge_week_window(now: Optional[datetime] = None) -> Tuple[datetime, datetime]:
+    now = now or now_fr()
+    now = now.astimezone(PARIS_TZ)
+    bootstrap_end = parse_dt_fr_env("CHALLENGE_BOOTSTRAP_END")
+    if bootstrap_end and now < bootstrap_end:
+        start = last_friday_17(now)
+        end = bootstrap_end
+        return start, end
+    start = last_friday_17(now)
+    end = start + timedelta(days=7)
+    return start, end
+
+
+# ----------------------------
 # Google Sheets service
-# --------------------------
+# ----------------------------
+def _is_quota_429(e: Exception) -> bool:
+    return isinstance(e, APIError) and ("429" in str(e) or "Quota exceeded" in str(e))
 
 @dataclass
-class CachedWS:
-    expires_at: float
-    ws: Any
+class CacheItem:
+    exp: float
+    value: Any
 
 class SheetsService:
-    def __init__(self, *, sheet_id: str, creds_json_path: str, scopes: List[str], ttl_seconds: int = 60):
+    """
+    - Cache worksheet (TTL)
+    - Cache headers (TTL)
+    - Retry 429
+    - Header-safe append/update
+    """
+    def __init__(self, sheet_id: str, creds_path: str = "credentials.json"):
         self.sheet_id = sheet_id
-        self.creds_json_path = creds_json_path
-        self.scopes = scopes
-        self.ttl_seconds = ttl_seconds
-
-        self._gc = None
+        self.creds_path = creds_path
+        self.scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive.file",
+        ]
+        self._gc: Optional[gspread.Client] = None
         self._sh = None
-        self._ws_cache: Dict[str, CachedWS] = {}
 
-    def _make_client_sync(self):
-        creds = Credentials.from_service_account_file(self.creds_json_path, scopes=self.scopes)
-        return gspread.authorize(creds)
+        self._ws_cache: Dict[str, CacheItem] = {}
+        self._hdr_cache: Dict[str, CacheItem] = {}
 
-    async def _retry_429(self, fn, *args, **kwargs):
+        self.ws_ttl = 60
+        self.hdr_ttl = 180
+
+    def _retry(self, fn, *args, **kwargs):
         delay = 1.0
         for _ in range(6):
             try:
-                return await asyncio.to_thread(fn, *args, **kwargs)
-            except APIError as e:
-                if "429" in str(e) or "Quota exceeded" in str(e):
-                    await asyncio.sleep(delay)
+                return fn(*args, **kwargs)
+            except Exception as e:
+                if _is_quota_429(e):
+                    time.sleep(delay)
                     delay *= 2
                     continue
                 raise
-        return await asyncio.to_thread(fn, *args, **kwargs)
+        return fn(*args, **kwargs)
 
-    async def _ensure_open(self):
+    def client(self) -> gspread.Client:
         if self._gc is None:
-            self._gc = await asyncio.to_thread(self._make_client_sync)
-        if self._sh is None:
-            self._sh = await self._retry_429(self._gc.open_by_key, self.sheet_id)
+            creds = Credentials.from_service_account_file(self.creds_path, scopes=self.scopes)
+            self._gc = gspread.authorize(creds)
+        return self._gc
 
-    async def ws(self, title: str):
+    def sheet(self):
+        if self._sh is None:
+            gc = self.client()
+            self._sh = self._retry(gc.open_by_key, self.sheet_id)
+        return self._sh
+
+    def ws(self, title: str):
         now = time.time()
         cached = self._ws_cache.get(title)
-        if cached and now < cached.expires_at:
-            return cached.ws
+        if cached and now < cached.exp:
+            return cached.value
 
-        await self._ensure_open()
-        w = await self._retry_429(self._sh.worksheet, title)
-        self._ws_cache[title] = CachedWS(expires_at=now + self.ttl_seconds, ws=w)
+        sh = self.sheet()
+        w = self._retry(sh.worksheet, title)
+        self._ws_cache[title] = CacheItem(exp=now + self.ws_ttl, value=w)
         return w
 
-    async def headers(self, title: str) -> List[str]:
-        w = await self.ws(title)
-        row = await asyncio.to_thread(w.row_values, 1)
-        return [h.strip() for h in row]
+    def headers(self, title: str) -> List[str]:
+        now = time.time()
+        cached = self._hdr_cache.get(title)
+        if cached and now < cached.exp:
+            return cached.value
 
-    async def append_by_headers(self, title: str, data: Dict[str, Any]):
-        w = await self.ws(title)
-        hdr = await self.headers(title)
+        w = self.ws(title)
+        hdr = [h.strip() for h in self._retry(w.row_values, 1)]
+        self._hdr_cache[title] = CacheItem(exp=now + self.hdr_ttl, value=hdr)
+        return hdr
+
+    def append_by_headers(self, title: str, data: Dict[str, Any]):
+        w = self.ws(title)
+        hdr = self.headers(title)
         row = [""] * len(hdr)
         for k, v in data.items():
             if k in hdr:
                 row[hdr.index(k)] = v
-        await asyncio.to_thread(w.append_row, row, value_input_option="RAW")
+        self._retry(w.append_row, row, value_input_option="RAW")
 
-    async def update_cell_by_header(self, title: str, row_i: int, header_name: str, value: Any):
-        w = await self.ws(title)
-        hdr = await self.headers(title)
-        if header_name not in hdr:
-            raise RuntimeError(f"Colonne `{header_name}` introuvable dans {title}")
-        col = hdr.index(header_name) + 1
-        await asyncio.to_thread(w.update_cell, row_i, col, value)
+    def update_cell_by_header(self, title: str, row_i: int, header: str, value: Any):
+        w = self.ws(title)
+        hdr = self.headers(title)
+        if header not in hdr:
+            raise RuntimeError(f"Colonne `{header}` introuvable dans {title}")
+        col = hdr.index(header) + 1
+        self._retry(w.update_cell, row_i, col, value)
 
-    async def batch_update(self, title: str, updates: List[Dict[str, Any]]):
-        w = await self.ws(title)
-        await asyncio.to_thread(w.batch_update, updates)
+    def batch_update(self, title: str, updates: List[Dict[str, Any]]):
+        """
+        updates = [{"range": "D2", "values": [[123]]}, ...]
+        """
+        w = self.ws(title)
+        self._retry(w.batch_update, updates)
 
-    async def all_records(self, title: str) -> List[Dict[str, Any]]:
-        w = await self.ws(title)
-        return await asyncio.to_thread(w.get_all_records)
+    def get_all_records(self, title: str) -> List[Dict[str, Any]]:
+        w = self.ws(title)
+        return self._retry(w.get_all_records)
 
-    async def all_values(self, title: str) -> List[List[str]]:
-        w = await self.ws(title)
-        return await asyncio.to_thread(w.get_all_values)
+    def get_all_values(self, title: str) -> List[List[str]]:
+        w = self.ws(title)
+        return self._retry(w.get_all_values)
 
-    async def delete_rows(self, title: str, idx: int):
-        w = await self.ws(title)
-        await asyncio.to_thread(w.delete_rows, idx)
+    def delete_row(self, title: str, row_i: int):
+        w = self.ws(title)
+        self._retry(w.delete_rows, row_i)
 
-# --------------------------
+
+# ----------------------------
 # S3 service
-# --------------------------
-
+# ----------------------------
 class S3Service:
     def __init__(self):
         self.bucket = (os.getenv("AWS_S3_BUCKET_NAME") or "").strip()
-        self.endpoint_url = (os.getenv("AWS_ENDPOINT_URL") or "").strip()
+        self.endpoint = (os.getenv("AWS_ENDPOINT_URL") or "").strip()
         self.region = (os.getenv("AWS_DEFAULT_REGION") or "auto").strip()
-        self.key_id = (os.getenv("AWS_ACCESS_KEY_ID") or "").strip()
+        self.key = (os.getenv("AWS_ACCESS_KEY_ID") or "").strip()
         self.secret = (os.getenv("AWS_SECRET_ACCESS_KEY") or "").strip()
+
+    def enabled(self) -> bool:
+        return bool(self.bucket and self.endpoint)
 
     def client(self):
         return boto3.client(
             "s3",
-            endpoint_url=self.endpoint_url if self.endpoint_url else None,
-            aws_access_key_id=self.key_id or None,
+            endpoint_url=self.endpoint if self.endpoint else None,
+            aws_access_key_id=self.key or None,
             aws_secret_access_key=self.secret or None,
             region_name=self.region or "auto",
             config=Config(signature_version="s3v4"),
@@ -193,22 +267,9 @@ class S3Service:
         except ClientError:
             return False
 
-    def signed_url(self, key: str, expires_seconds: int = 3600) -> Optional[str]:
-        if not key or not self.bucket:
-            return None
-        if not self.object_exists(key):
-            return None
-        s3 = self.client()
-        return s3.generate_presigned_url(
-            ClientMethod="get_object",
-            Params={"Bucket": self.bucket, "Key": key},
-            ExpiresIn=int(expires_seconds),
-        )
-
     def upload_png(self, png_bytes: bytes, object_key: str) -> str:
         if not self.bucket:
             raise RuntimeError("AWS_S3_BUCKET_NAME manquant")
-
         s3 = self.client()
         extra = {"ContentType": "image/png"}
         extra_try_acl = dict(extra)
@@ -219,13 +280,25 @@ class S3Service:
         except ClientError:
             s3.put_object(Bucket=self.bucket, Key=object_key, Body=png_bytes, **extra)
 
-        base = (self.endpoint_url or "").rstrip("/")
+        base = (self.endpoint or "").rstrip("/")
         return f"{base}/{self.bucket}/{object_key}"
 
-# --------------------------
-# VIP card generator
-# --------------------------
+    def signed_url(self, object_key: str, expires_seconds: int = 3600) -> Optional[str]:
+        if not object_key or not self.bucket:
+            return None
+        if not self.object_exists(object_key):
+            return None
+        s3 = self.client()
+        return s3.generate_presigned_url(
+            ClientMethod="get_object",
+            Params={"Bucket": self.bucket, "Key": object_key},
+            ExpiresIn=int(expires_seconds),
+        )
 
+
+# ----------------------------
+# VIP card image
+# ----------------------------
 def generate_vip_card_image(
     template_path: str,
     font_path: str,
@@ -233,7 +306,7 @@ def generate_vip_card_image(
     full_name: str,
     dob: str,
     phone: str,
-    bleeter: str
+    bleeter: str,
 ) -> bytes:
     img = Image.open(template_path).convert("RGBA")
     draw = ImageDraw.Draw(img)
