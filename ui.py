@@ -8,7 +8,7 @@ import discord
 from discord import ui
 
 import domain
-from services import catify, now_fr
+from services import catify, now_fr, now_iso
 
 
 # ---------------------------------------
@@ -697,3 +697,159 @@ class DefiWeek12View(discord.ui.View):
 
         await interaction.message.edit(embed=emb, view=self)
         await interaction.followup.send("✅ Freestyle enregistré.", ephemeral=True)
+
+# --- VIP EDIT UI (staff) ---
+
+EDIT_FIELDS = [
+    ("Pseudo", "pseudo"),
+    ("Bleeter", "bleeter"),
+    ("Téléphone", "phone"),
+    ("Date de naissance (dob)", "dob"),
+    ("Status (ACTIVE/DISABLED)", "status"),
+    ("Discord ID (liaison)", "discord_id"),
+]
+
+
+class VipEditView(ui.View):
+    def __init__(self, *, services, author_id: int, code_vip: str, vip_pseudo: str):
+        super().__init__(timeout=5 * 60)
+        self.s = services
+        self.author_id = author_id
+
+        self.code = domain.normalize_code(code_vip)
+        self.vip_pseudo = domain.display_name(vip_pseudo or self.code)
+
+        self.selected_field = "bleeter"
+        self.add_item(VipEditFieldSelect(self))
+        self.add_item(VipEditOpenModalButton(self))
+        self.add_item(VipEditCloseButton())
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(catify("😾 Pas touche. Ouvre ton /vip edit."), ephemeral=True)
+            return False
+        return True
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+
+    def build_embed(self) -> discord.Embed:
+        field_label = next((lab for lab, val in EDIT_FIELDS if val == self.selected_field), self.selected_field)
+        e = discord.Embed(
+            title="🛠️ Édition VIP",
+            description=(
+                f"👤 **VIP** : {self.vip_pseudo} • `{self.code}`\n\n"
+                f"🔧 Champ sélectionné : **{field_label}**\n"
+                "Clique **Modifier** pour saisir une nouvelle valeur."
+            ),
+            color=discord.Color.dark_teal()
+        )
+        e.set_footer(text="Astuce: laisse vide pour effacer (sauf status).")
+        return e
+
+    async def refresh(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def apply_update(self, interaction: discord.Interaction, field: str, new_value: str):
+        # retrouve la ligne VIP
+        row_i, vip = domain.find_vip_row_by_code(self.s, self.code)
+        if not row_i or not vip:
+            return await interaction.followup.send("❌ VIP introuvable (ligne).", ephemeral=True)
+
+        field = (field or "").strip()
+        val = (new_value or "").strip()
+
+        # règles spécifiques
+        if field == "status":
+            v = val.upper()
+            if v not in ("ACTIVE", "DISABLED"):
+                return await interaction.followup.send("❌ Status doit être ACTIVE ou DISABLED.", ephemeral=True)
+            val = v
+
+        if field == "discord_id":
+            # autorise vide (unlink) ou un int
+            if val:
+                try:
+                    int(val)
+                except Exception:
+                    return await interaction.followup.send("❌ discord_id doit être un nombre (ID Discord).", ephemeral=True)
+
+        # update sheet
+        self.s.update_cell_by_header("VIP", row_i, field, val)
+
+        # log
+        self.s.append_by_headers("LOG", {
+            "timestamp": now_iso(),
+            "staff_id": str(interaction.user.id),
+            "code_vip": self.code,
+            "action_key": "EDIT_VIP",
+            "quantite": 1,
+            "points_unite": 0,
+            "delta_points": 0,
+            "raison": f"{field} -> {val if val else '(vide)'}",
+        })
+
+        # petit feedback + refresh message original (la view)
+        await interaction.followup.send(f"✅ `{field}` mis à jour pour **{self.vip_pseudo}**.", ephemeral=True)
+
+        # On tente de rafraîchir l'embed du panneau (pas obligatoire)
+        try:
+            await interaction.message.edit(embed=self.build_embed(), view=self)
+        except Exception:
+            pass
+
+
+class VipEditFieldSelect(ui.Select):
+    def __init__(self, view: VipEditView):
+        options = [discord.SelectOption(label=label, value=value) for label, value in EDIT_FIELDS]
+        super().__init__(placeholder="Choisir une info à modifier…", options=options, min_values=1, max_values=1)
+        self.v = view
+
+    async def callback(self, interaction: discord.Interaction):
+        self.v.selected_field = self.values[0]
+        await self.v.refresh(interaction)
+
+
+class VipEditOpenModalButton(ui.Button):
+    def __init__(self, view: VipEditView):
+        super().__init__(label="✍️ Modifier", style=discord.ButtonStyle.primary)
+        self.v = view
+
+    async def callback(self, interaction: discord.Interaction):
+        field = self.v.selected_field
+        label = next((lab for lab, val in EDIT_FIELDS if val == field), field)
+        await interaction.response.send_modal(VipEditValueModal(self.v, field=field, label=label))
+
+
+class VipEditValueModal(ui.Modal):
+    def __init__(self, view: VipEditView, *, field: str, label: str):
+        super().__init__(title=f"Modifier: {label}")
+        self.v = view
+        self.field = field
+
+        placeholder = "Nouvelle valeur (vide = effacer)" if field != "status" else "ACTIVE ou DISABLED"
+        maxlen = 200
+
+        self.value_input = ui.TextInput(
+            label=label,
+            required=(field == "status"),
+            placeholder=placeholder,
+            max_length=maxlen
+        )
+        self.add_item(self.value_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        await self.v.apply_update(interaction, self.field, str(self.value_input.value))
+
+
+class VipEditCloseButton(ui.Button):
+    def __init__(self):
+        super().__init__(label="✅ Fermer", style=discord.ButtonStyle.success)
+
+    async def callback(self, interaction: discord.Interaction):
+        for item in self.view.children:
+            item.disabled = True
+        await interaction.response.edit_message(content="✅ Panneau fermé.", embed=None, view=self.view)
+
