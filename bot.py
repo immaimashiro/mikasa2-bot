@@ -786,7 +786,7 @@ async def cave_info(interaction: discord.Interaction, term: str):
 
 #VIP HELP
 
-@vip_group.command(name="help", description="Aide interactive VIP/Staff.")
+@vip_group.command(name="guide", description="Guide interactif VIP/Staff.")
 @staff_check()
 @app_commands.describe(section="vip | staff | defi | tout")
 async def vip_help(interaction: discord.Interaction, section: str = "tout"):
@@ -905,7 +905,7 @@ async def vip_edit(interaction: discord.Interaction, vip: str = "", recherche: s
 
 #VIP help
 
-@vip_group.command(name="help", description="Aide interactive VIP/Staff.")
+@vip_group.command(name="guide", description="Guide interactif VIP/Staff.")
 @staff_check()
 @app_commands.describe(section="all | vip | staff | defi")
 async def vip_help(interaction: discord.Interaction, section: str = "all"):
