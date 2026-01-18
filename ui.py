@@ -190,7 +190,7 @@ class ValidateButton(ui.Button):
                 base_reason += f" | note:{self.sale_view.note}"
 
             if n > 0:
-                ok, msg = domain.add_points_by_action(
+                ok, res = domain.add_points_by_action(
                     self.sale_view.services,
                     self.sale_view.code_vip,
                     "ACHAT",
@@ -200,12 +200,14 @@ class ValidateButton(ui.Button):
                     author_is_hg=self.sale_view.author_is_hg
                 )
                 if ok:
-                    applied.append(f"`{cat}` ACHAT x{n}")
+                    delta, new_points, old_level, new_level = res
+                    applied.append(f"`{cat}` ACHAT x{n} (**+{delta} pts**, total {new_points})")
                 else:
-                    errors.append(f"`{cat}` ACHAT: {msg}")
+                    errors.append(f"`{cat}` ACHAT: {res}")
+
 
             if l > 0:
-                ok, msg = domain.add_points_by_action(
+                ok, res = domain.add_points_by_action(
                     self.sale_view.services,
                     self.sale_view.code_vip,
                     "ACHAT_LIMITEE",
@@ -215,9 +217,10 @@ class ValidateButton(ui.Button):
                     author_is_hg=self.sale_view.author_is_hg
                 )
                 if ok:
-                    applied.append(f"`{cat}` LIMITEE x{l}")
+                    delta, new_points, old_level, new_level = res
+                    applied.append(f"`{cat}` LIMITEE x{l} (**+{delta} pts**, total {new_points})")
                 else:
-                    errors.append(f"`{cat}` LIMITEE: {msg}")
+                    errors.append(f"`{cat}` LIMITEE: {res}")
 
         # Fin: on fige l’UI
         for item in self.sale_view.children:
@@ -234,180 +237,6 @@ class ValidateButton(ui.Button):
         await interaction.message.edit(embed=None, view=self.sale_view)
         await interaction.followup.send(receipt, ephemeral=True)
 
-
-class SaleCategorySelect(discord.ui.Select):
-    def __init__(self):
-        options = [discord.SelectOption(label=label, value=value) for label, value in CATEGORIES]
-        super().__init__(placeholder="Choisir une catégorie d’articles…", options=options, min_values=1, max_values=1)
-
-    async def callback(self, interaction: discord.Interaction):
-        view: SaleWindowView = self.view  # type: ignore
-        view.category = self.values[0]
-        await view.refresh(interaction)
-
-class SaleWindowView(discord.ui.View):
-    """
-    Une seule UI pour saisir:
-    - ACHAT (articles normaux)
-    - ACHAT_LIMITEE (articles VIP/limités)
-    Avec + / - et un Valider.
-    """
-    def __init__(
-        self,
-        *,
-        author: discord.Member,
-        services,
-        code_vip: str,
-        vip_pseudo: str,
-        author_is_hg: bool
-    ):
-        super().__init__(timeout=180)
-        self.author = author
-        self.s = services
-        self.code = domain.normalize_code(code_vip)
-        self.vip_pseudo = vip_pseudo
-        self.author_is_hg = author_is_hg
-
-        self.qty_normal = 0
-        self.qty_limited = 0
-        self.category = "TSHIRT"
-        self.note = ""
-
-        self.add_item(SaleCategorySelect())
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.author.id:
-            await interaction.response.send_message(catify("😾 Pas touche. Ouvre ta propre fenêtre de vente."), ephemeral=True)
-            return False
-        return True
-
-    def embed(self) -> discord.Embed:
-        desc = (
-            f"👤 **{self.vip_pseudo}** • `{self.code}`\n"
-            f"🏷️ Catégorie: **{self.category}**\n\n"
-            f"🛍️ **ACHAT (normal)**: **{self.qty_normal}**\n"
-            f"🎟️ **ACHAT_LIMITEE**: **{self.qty_limited}**\n\n"
-            f"📝 Note: {self.note or '_aucune_'}\n"
-            f"Quand c’est bon: clique **VALIDER**."
-        )
-        e = discord.Embed(title="🧾 Fenêtre de vente SubUrban", description=desc, color=discord.Color.blurple())
-        e.set_footer(text="Astuce: tu peux faire + / - au fur et à mesure que tu sors les vêtements.")
-        return e
-
-    async def refresh(self, interaction: discord.Interaction):
-        # met à jour l’affichage sans recréer le message
-        self._sync_buttons()
-        await interaction.response.edit_message(embed=self.embed(), view=self)
-
-    def _sync_buttons(self):
-        # désactive valider si rien
-        for item in self.children:
-            if isinstance(item, SaleValidateButton):
-                item.disabled = (self.qty_normal <= 0 and self.qty_limited <= 0)
-
-    @discord.ui.button(label="➕ Normal", style=discord.ButtonStyle.secondary)
-    async def plus_normal(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.qty_normal += 1
-        await self.refresh(interaction)
-
-    @discord.ui.button(label="➖ Normal", style=discord.ButtonStyle.secondary)
-    async def minus_normal(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.qty_normal = max(0, self.qty_normal - 1)
-        await self.refresh(interaction)
-
-    @discord.ui.button(label="➕ Limitée", style=discord.ButtonStyle.secondary)
-    async def plus_limited(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.qty_limited += 1
-        await self.refresh(interaction)
-
-    @discord.ui.button(label="➖ Limitée", style=discord.ButtonStyle.secondary)
-    async def minus_limited(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.qty_limited = max(0, self.qty_limited - 1)
-        await self.refresh(interaction)
-
-    @discord.ui.button(label="✍️ Note", style=discord.ButtonStyle.primary)
-    async def set_note(self, interaction: discord.Interaction, button: discord.ui.Button):
-        modal = SaleNoteModal(view=self)
-        await interaction.response.send_modal(modal)
-
-    @discord.ui.button(label="✅ VALIDER", style=discord.ButtonStyle.success)
-    async def validate(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # remplacé par bouton dédié pour le type-check
-        pass
-
-    async def finalize(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-
-        # reason uniforme pour les 2 actions
-        # (tu peux filtrer plus tard via tag vente:)
-        reason = f"vente:{self.category}"
-        if self.note:
-            reason += f" note:{self.note.replace(' ', '_')[:40]}"
-
-        results = []
-        lvl_up = None
-
-        if self.qty_normal > 0:
-            ok, res = domain.add_points_by_action(
-                self.s, self.code, "ACHAT", self.qty_normal,
-                interaction.user.id, reason, author_is_hg=self.author_is_hg
-            )
-            if not ok:
-                return await interaction.followup.send(f"❌ ACHAT: {res}", ephemeral=True)
-            results.append(("ACHAT", res))
-
-        if self.qty_limited > 0:
-            ok, res = domain.add_points_by_action(
-                self.s, self.code, "ACHAT_LIMITEE", self.qty_limited,
-                interaction.user.id, reason, author_is_hg=self.author_is_hg
-            )
-            if not ok:
-                return await interaction.followup.send(f"❌ ACHAT_LIMITEE: {res}", ephemeral=True)
-            results.append(("ACHAT_LIMITEE", res))
-
-        # calcul simple du niveau up: on regarde le dernier res
-        # (si les deux ont été appliqués, le second reflète le total final)
-        last = results[-1][1] if results else None
-        if last:
-            delta, new_points, old_level, new_level = last
-            if new_level > old_level:
-                lvl_up = (old_level, new_level)
-
-        # verrouille l’UI
-        for item in self.children:
-            item.disabled = True
-
-        # message recap
-        lines = [f"✅ Vente enregistrée pour **{self.vip_pseudo}** (`{self.code}`)"]
-        for name, res in results:
-            delta, new_points, old_level, new_level = res
-            lines.append(f"• **{name}**: **+{delta} pts** → total **{new_points}** (niv {new_level})")
-
-        if lvl_up:
-            lines.append(f"🎊 Level up: **{lvl_up[0]} → {lvl_up[1]}**")
-
-        await interaction.message.edit(embed=self.embed(), view=self)
-        await interaction.followup.send("\n".join(lines), ephemeral=True)
-
-class SaleValidateButton(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="✅ VALIDER", style=discord.ButtonStyle.success)
-
-    async def callback(self, interaction: discord.Interaction):
-        view: SaleWindowView = self.view  # type: ignore
-        await view.finalize(interaction)
-
-class SaleNoteModal(discord.ui.Modal, title="Note de vente"):
-    note = discord.ui.TextInput(label="Note (optionnel)", required=False, max_length=80)
-
-    def __init__(self, view: SaleWindowView):
-        super().__init__()
-        self._view = view
-
-    async def on_submit(self, interaction: discord.Interaction):
-        self._view.note = str(self.note.value or "").strip()
-        await self._view.refresh(interaction)
-        
 # ---------------------------------------
 # Défis: View standard (semaines 1..11)
 # ---------------------------------------
