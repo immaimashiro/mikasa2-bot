@@ -786,7 +786,58 @@ async def cave_info(interaction: discord.Interaction, term: str):
 
 #VIP HELP
 
-@vip_group.command(name="guide", description="Guide interactif VIP/Staff.")
+@vip_group.command(name="guide", description="Guide VIP – informations pour les clients VIP.")
+async def vip_guide(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    embed = discord.Embed(
+        title="🎴 Guide VIP – Mikasa",
+        description=(
+            "Bienvenue dans le **programme VIP SubUrban**.\n\n"
+            "Ce guide est destiné aux **clients VIP** pour consulter leurs informations."
+        ),
+        color=discord.Color.gold()
+    )
+
+    embed.add_field(
+        name="👤 Voir ton profil VIP",
+        value=(
+            "Utilise la commande :\n"
+            "**`/vipme`**\n\n"
+            "Elle te permet de voir:\n"
+            "• 🎖️ ton **niveau VIP**\n"
+            "• ⭐ tes **points**\n"
+            "• 🎁 les **avantages débloqués**"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="📸 Défis de la semaine",
+        value=(
+            "Dans `/vipme`, tu peux aussi consulter:\n"
+            "• l’**avancement de tes défis hebdomadaires**\n"
+            "• les défis validés ou en attente\n\n"
+            "⚠️ Les défis sont validés par le staff."
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="ℹ️ Besoin d’aide ?",
+        value=(
+            "Si une information est incorrecte ou manquante:\n"
+            "• adresse-toi à un **vendeur**\n"
+            "• ou à un membre du **staff SubUrban**"
+        ),
+        inline=False
+    )
+
+    embed.set_footer(text="Mikasa surveille les registres VIP. 🐾")
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+@vip_group.command(name="staff_guide", description="Guide interactif VIP/Staff.")
 @staff_check()
 @app_commands.describe(section="vip | staff | defi | tout")
 async def vip_help(interaction: discord.Interaction, section: str = "tout"):
