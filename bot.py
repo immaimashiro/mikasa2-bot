@@ -905,7 +905,7 @@ async def vip_edit(interaction: discord.Interaction, vip: str = "", recherche: s
 
 #VIP help
 
-@vip_group.command(name="guide", description="Guide interactif VIP/Staff.")
+@vip_group.command(name="manuel", description="Guide interactif VIP/Staff.")
 @staff_check()
 @app_commands.describe(section="all | vip | staff | defi")
 async def vip_help(interaction: discord.Interaction, section: str = "all"):
