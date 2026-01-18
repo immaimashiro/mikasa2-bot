@@ -149,6 +149,29 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         await reply_ephemeral(interaction, msg)
     except Exception:
         pass
+        
+def safe_tree_command(name: str, description: str):
+    """
+    Décorateur qui n'ajoute la commande que si elle n'existe pas déjà dans bot.tree.
+    Evite les crash CommandAlreadyRegistered pendant les copier/coller.
+    """
+    def decorator(func):
+        if bot.tree.get_command(name) is not None:
+            print(f"[SKIP] Command déjà enregistrée: {name}")
+            return func
+        return bot.tree.command(name=name, description=description)(func)
+    return decorator
+
+def safe_group_command(group: app_commands.Group, name: str, description: str):
+    """
+    Idem mais pour app_commands.Group (ex: vip_group).
+    """
+    def decorator(func):
+        if any(cmd.name == name for cmd in group.commands):
+            print(f"[SKIP] Group command déjà enregistrée: {group.name} {name}")
+            return func
+        return group.command(name=name, description=description)(func)
+    return decorator
 
 # ----------------------------
 # Level up announce (optionnel)
@@ -242,7 +265,7 @@ async def vip_autocomplete(interaction: discord.Interaction, current: str):
 # ----------------------------
 # /vip actions
 # ----------------------------
-@vip_group.command(name="actions", description="Liste des actions et points (staff).")
+@safe_group_command(name="actions", description="Liste des actions et points (staff).")
 @staff_check()
 async def vip_actions(interaction: discord.Interaction):
     await defer_ephemeral(interaction)
@@ -267,7 +290,7 @@ async def vip_actions(interaction: discord.Interaction):
 # ----------------------------
 # /vip add
 # ----------------------------
-@vip_group.command(name="add", description="Ajouter une action/points à un VIP (staff).")
+@safe_group_command(name="add", description="Ajouter une action/points à un VIP (staff).")
 @staff_check()
 @app_commands.describe(code_vip="SUB-XXXX-XXXX", action_key="Action", quantite="Quantité", raison="Optionnel")
 async def vip_add(interaction: discord.Interaction, code_vip: str, action_key: str, quantite: int, raison: str = ""):
@@ -296,7 +319,7 @@ async def vip_add(interaction: discord.Interaction, code_vip: str, action_key: s
 # /vip bleeter (fenêtre de vente)
 # ------------------------------
 
-@vip_group.command(name="bleeter", description="Ajouter ou modifier le Bleeter d’un VIP (staff).")
+@safe_group_command(name="bleeter", description="Ajouter ou modifier le Bleeter d’un VIP (staff).")
 @staff_check()
 @app_commands.describe(
     query="Code VIP SUB-XXXX-XXXX ou pseudo",
@@ -353,7 +376,7 @@ CATEGORIES = [
     ("Autre", "OTHER"),
 ]
 
-@vip_group.command(name="sale", description="Ouvrir une fenêtre de vente (panier) pour un VIP.")
+@safe_group_command(name="sale", description="Ouvrir une fenêtre de vente (panier) pour un VIP.")
 @staff_check()
 @app_commands.describe(query="Code VIP SUB-XXXX-XXXX ou pseudo")
 async def vip_sale(interaction: discord.Interaction, query: str):
@@ -385,7 +408,7 @@ async def vip_sale(interaction: discord.Interaction, query: str):
 # ----------------------------
 # /vip create
 # ----------------------------
-@vip_group.command(name="create", description="Créer un profil VIP (staff).")
+@safe_group_command(name="create", description="Créer un profil VIP (staff).")
 @staff_check()
 @app_commands.describe(
     pseudo="Nom/Pseudo RP (obligatoire)",
@@ -471,7 +494,7 @@ async def vip_create(
 # ----------------------------
 # /vip card_generate (dans n’importe quel salon)
 # ----------------------------
-@vip_group.command(name="card_generate", description="Générer la carte VIP (staff).")
+@safe_group_command(name="card_generate", description="Générer la carte VIP (staff).")
 @staff_check()
 @app_commands.describe(code_vip="SUB-XXXX-XXXX")
 async def vip_card_generate(interaction: discord.Interaction, code_vip: str):
@@ -526,7 +549,7 @@ async def vip_card_generate(interaction: discord.Interaction, code_vip: str):
 # ----------------------------
 # /vip card_show
 # ----------------------------
-@vip_group.command(name="card_show", description="Afficher une carte VIP (staff).")
+@safe_group_command(name="card_show", description="Afficher une carte VIP (staff).")
 @staff_check()
 @app_commands.describe(query="SUB-XXXX-XXXX ou pseudo")
 async def vip_card_show(interaction: discord.Interaction, query: str):
@@ -556,7 +579,7 @@ async def vip_card_show(interaction: discord.Interaction, query: str):
 # ----------------------------
 # /vip sales_sum 
 # ----------------------------
-@vip_group.command(name="sales_summary", description="Résumé des ventes (staff).")
+@safe_group_command(name="sales_summary", description="Résumé des ventes (staff).")
 @staff_check()
 @app_commands.describe(
     periode="day | week | month",
@@ -786,7 +809,7 @@ async def cave_info(interaction: discord.Interaction, term: str):
 
 #VIP HELP
 
-@vip_group.command(name="guide", description="Guide VIP – informations pour les clients VIP.")
+@safe_group_command(name="guide", description="Guide VIP – informations pour les clients VIP.")
 async def vip_guide(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
@@ -837,7 +860,7 @@ async def vip_guide(interaction: discord.Interaction):
 
     await interaction.followup.send(embed=embed, ephemeral=True)
 
-@vip_group.command(name="staff_guide", description="Guide interactif VIP/Staff.")
+@safe_group_command(name="staff_guide", description="Guide interactif VIP/Staff.")
 @staff_check()
 @app_commands.describe(section="vip | staff | defi | tout")
 async def vip_help(interaction: discord.Interaction, section: str = "tout"):
@@ -894,7 +917,7 @@ async def vip_help(interaction: discord.Interaction, section: str = "tout"):
 
 # VIP commandes
 
-@bot.tree.command(name="vipme", description="Ouvrir ton espace VIP (niveau & défis).")
+@safe_tree_command(name="vipme", description="Ouvrir ton espace VIP (niveau & défis).")
 async def vipme(interaction: discord.Interaction):
     await defer_ephemeral(interaction)
 
@@ -913,7 +936,7 @@ async def vipme(interaction: discord.Interaction):
 
 #VIP edit
 
-@vip_group.command(name="edit", description="Modifier un VIP (autocomplete + sélection interactive).")
+@safe_group_command(name="edit", description="Modifier un VIP (autocomplete + sélection interactive).")
 @staff_check()
 @app_commands.describe(vip="Choisis un VIP (autocomplete)", recherche="Optionnel si tu veux taper un nom approximatif")
 @app_commands.autocomplete(vip=vip_autocomplete)
@@ -969,7 +992,7 @@ async def vip_edit(interaction: discord.Interaction, vip: str = "", recherche: s
 
 #VIP niveau
 
-@bot.tree.command(name="niveau", description="Voir le niveau VIP d’un client (staff).")
+@safe_tree_command(name="niveau", description="Voir le niveau VIP d’un client (staff).")
 @staff_check()
 @app_commands.describe(query="Pseudo ou code VIP (SUB-XXXX-XXXX)")
 async def niveau(interaction: discord.Interaction, query: str):
@@ -1023,7 +1046,7 @@ async def niveau(interaction: discord.Interaction, query: str):
 
     await interaction.followup.send(embed=emb, ephemeral=True)
 
-@bot.tree.command(name="niveau_top", description="Top VIP (actifs) par points (staff).")
+@safe_tree_command(name="niveau_top", description="Top VIP (actifs) par points (staff).")
 @staff_check()
 async def niveau_top(interaction: discord.Interaction):
     await defer_ephemeral(interaction)
@@ -1065,7 +1088,7 @@ async def niveau_top(interaction: discord.Interaction):
     emb.set_footer(text="Mikasa compte… *tap tap* 🐾")
     await interaction.followup.send(embed=emb, ephemeral=True)
 
-@bot.tree.command(name="vipsearch", description="Rechercher un VIP (staff).")
+@safe_tree_command(name="vipsearch", description="Rechercher un VIP (staff).")
 @staff_check()
 @app_commands.describe(term="Pseudo (partiel), code (partiel) ou discord_id (exact)")
 async def vipsearch(interaction: discord.Interaction, term: str):
@@ -1118,7 +1141,7 @@ async def vipsearch(interaction: discord.Interaction, term: str):
     emb.set_footer(text="Astuce: cherche aussi par code SUB-…")
     await interaction.followup.send(embed=emb, ephemeral=True)
 
-@bot.tree.command(name="vipstats", description="Stats globales VIP (staff).")
+@safe_tree_command(name="vipstats", description="Stats globales VIP (staff).")
 @staff_check()
 async def vipstats(interaction: discord.Interaction):
     await defer_ephemeral(interaction)
@@ -1182,7 +1205,7 @@ async def vipstats(interaction: discord.Interaction):
 
     await interaction.followup.send(embed=emb, ephemeral=True)
 
-@bot.tree.command(name="vipstats", description="Stats globales VIP (staff).")
+@safe_tree_command(name="vipstats", description="Stats globales VIP (staff).")
 @staff_check()
 async def vipstats(interaction: discord.Interaction):
     await defer_ephemeral(interaction)
@@ -1250,10 +1273,10 @@ async def vipstats(interaction: discord.Interaction):
 #VIP help
 
 def _vip_has_command(name: str) -> bool:
-    return any(cmd.name == name for cmd in vip_group.commands)
+    return any(cmd.name == name for cmd in safe_group_commands)
 
 if not _vip_has_command("guide"):
-    @vip_group.command(name="guide", description="Guide interactif VIP/Staff.")
+    @safe_group_command(name="guide", description="Guide interactif VIP/Staff.")
     @staff_check()
     @app_commands.describe(section="all | vip | staff | defi")
     async def vip_guide(interaction: discord.Interaction, section: str = "all"):
