@@ -242,26 +242,45 @@ async def vip_add(interaction: discord.Interaction, code_vip: str, action_key: s
 # ----------------------------
 # /vip sale (fenêtre de vente)
 # ----------------------------
-@vip_group.command(name="sale", description="Ouvrir la fenêtre de vente (ACHAT + ACHAT_LIMITEE).")
+CATEGORIES = [
+    ("Haut", "TSHIRT/HOODIES"),
+    ("Bas", "PANTS"),
+    ("Chaussures", "SHOES"),
+    ("Masque", "MASKS"),
+    ("Accessoire", "ACCESSORY"),
+    ("Autre", "OTHER"),
+]
+
+@vip_group.command(name="sale", description="Ouvrir une fenêtre de vente.")
 @staff_check()
-@app_commands.describe(code_vip="SUB-XXXX-XXXX ou pseudo (staff)")
-async def vip_sale(interaction: discord.Interaction, code_vip: str):
-    await defer_ephemeral(interaction)
+async def vip_sale(interaction: discord.Interaction):
+    view = SaleCartView(
+        author_id=interaction.user.id,
+        categories=CATEGORIES
+    )
+    await interaction.response.send_message(
+        embed=view.build_embed(),
+        view=view,
+        ephemeral=True
+    )
+#@app_commands.describe(code_vip="SUB-XXXX-XXXX ou pseudo (staff)")
+#async def vip_sale(interaction: discord.Interaction, code_vip: str):
+    #await defer_ephemeral(interaction)
 
-    row_i, vip = domain.find_vip_row_by_code_or_pseudo(sheets, code_vip)
-    if not row_i or not vip:
-        return await interaction.followup.send("❌ VIP introuvable (code ou pseudo).", ephemeral=True)
+    #row_i, vip = domain.find_vip_row_by_code_or_pseudo(sheets, code_vip)
+    #if not row_i or not vip:
+    #    return await interaction.followup.send("❌ VIP introuvable (code ou pseudo).", ephemeral=True)
 
-    m = staff_member(interaction)
-    author_is_hg = bool(m and is_hg(m))
+    #m = staff_member(interaction)
+   # author_is_hg = bool(m and is_hg(m))
 
-    code = normalize_code(str(vip.get("code_vip", "")))
-    pseudo = display_name(vip.get("pseudo", code))
+   # code = normalize_code(str(vip.get("code_vip", "")))
+   # pseudo = display_name(vip.get("pseudo", code))
 
-    view = ui.SaleWindowView(author=interaction.user, services=sheets, code_vip=code, vip_pseudo=pseudo, author_is_hg=author_is_hg)
+  #  view = ui.SaleWindowView(author=interaction.user, services=sheets, code_vip=code, vip_pseudo=pseudo, author_is_hg=author_is_hg)
     # Ajoute le bouton Valider propre (type-check)
-    view.add_item(ui.SaleValidateButton())
-    await interaction.followup.send(embed=view.embed(), view=view, ephemeral=True)
+   # view.add_item(ui.SaleValidateButton())
+   # await interaction.followup.send(embed=view.embed(), view=view, ephemeral=True)
 
 # ----------------------------
 # /vip create
