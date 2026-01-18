@@ -1211,18 +1211,14 @@ async def vipstats(interaction: discord.Interaction):
 @bot.event
 async def on_ready():
     print(f"Mikasa V2 connectée en tant que {bot.user}")
-
-    guild = discord.Object(id=GUILD_ID)
-
     try:
-        # Sync uniquement sur la guilde (rapide et stable)
+        guild = discord.Object(id=GUILD_ID)
         bot.tree.copy_global_to(guild=guild)
         await bot.tree.sync(guild=guild)
         print(f"Slash commands sync sur GUILD_ID={GUILD_ID}")
     except Exception as e:
         print("Sync slash failed:", e)
 
-    # scheduler vendredi 17:00
     if not getattr(bot, "_mikasa_scheduler_started", False):
         bot._mikasa_scheduler_started = True
         trigger = CronTrigger(day_of_week="fri", hour=17, minute=0, timezone=services.PARIS_TZ)
