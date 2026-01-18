@@ -22,10 +22,10 @@ def col_letter_for_defi(n: int) -> str:
 # Fenêtre de vente: + / - puis Valider
 # ---------------------------------------
 CATEGORIES = [
-    ("T-shirt", "TSHIRT"),
-    ("Hoodie", "HOODIE"),
-    ("Pantalon", "PANTS"),
-    ("Veste", "JACKET"),
+    ("Haut", "TSHIRT/HOODIES"),
+    ("Bas", "PANTS"),
+    ("Chaussures", "SHOES"),
+    ("Masque", "MASKS"),
     ("Accessoire", "ACCESSORY"),
     ("Autre", "OTHER"),
 ]
