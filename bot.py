@@ -671,6 +671,51 @@ async def cave_info(interaction: discord.Interaction, term: str):
 
     await interaction.followup.send(catify("😾 Aucun dossier trouvé."), ephemeral=True)
 
+#VIP HELP
+
+@vip_group.command(name="help", description="Aide interactive VIP/Staff.")
+@staff_check()
+@app_commands.describe(section="vip | staff | defi | tout")
+async def vip_help(interaction: discord.Interaction, section: str = "tout"):
+    await defer_ephemeral(interaction)
+
+    section = (section or "tout").strip().lower()
+    if section not in ("vip", "staff", "defi", "tout"):
+        section = "tout"
+
+    lines = ["📌 **Aide Mikasa**"]
+
+    if section in ("vip", "tout"):
+        lines += [
+            "",
+            "### VIP",
+            "• `/vip create` Créer un VIP",
+            "• `/vip add` Ajouter une action/points",
+            "• `/vip sale` Fenêtre panier de vente",
+            "• `/vip card_generate` Générer la carte VIP",
+            "• `/vip card_show` Afficher la carte VIP",
+            "• `/vip actions` Voir les actions",
+            "• `/vip sales_summary` Résumé ventes",
+        ]
+
+    if section in ("defi", "tout"):
+        lines += [
+            "",
+            "### Défis (HG)",
+            "• `/defi panel` Valider défis",
+            "• `/defi week_announce` Poster l’annonce hebdo",
+        ]
+
+    if section in ("staff", "tout"):
+        lines += [
+            "",
+            "### Staff",
+            "Astuce: utilisez `/vip sale <codeVIP/pseudo>` pour éviter de taper 2 commandes.",
+        ]
+
+    await interaction.followup.send("\n".join(lines), ephemeral=True)
+
+
 # ----------------------------
 # Ready + sync + scheduler
 # ----------------------------
@@ -678,6 +723,18 @@ async def cave_info(interaction: discord.Interaction, term: str):
 async def on_ready():
     print(f"Mikasa V2 connectée en tant que {bot.user}")
 
+    guild = discord.Object(id=GUILD_ID)
+
+    # ⚠️ Reset commands de la guilde (à faire une fois)
+    bot.tree.clear_commands(guild=guild)
+    await bot.tree.sync(guild=guild)
+
+    # Réinjecte les globales puis resync
+    bot.tree.copy_global_to(guild=guild)
+    await bot.tree.sync(guild=guild)
+
+    print(f"Slash commands sync (reset) sur GUILD_ID={GUILD_ID}")
+    
     # Sync sur ton serveur (évite les surprises)
     try:
         guild = discord.Object(id=GUILD_ID)
