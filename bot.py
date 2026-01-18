@@ -239,6 +239,55 @@ async def vip_add(interaction: discord.Interaction, code_vip: str, action_key: s
         pseudo = vip.get("pseudo", "VIP") if vip else "VIP"
         await announce_level_up(normalize_code(code_vip), pseudo, old_level, new_level)
 
+# ------------------------------
+# /vip bleeter (fenêtre de vente)
+# ------------------------------
+
+@vip_group.command(name="bleeter", description="Ajouter ou modifier le Bleeter d’un VIP (staff).")
+@staff_check()
+@app_commands.describe(
+    query="Code VIP SUB-XXXX-XXXX ou pseudo",
+    bleeter="Pseudo Bleeter (ex: @K.Gails). Laisse vide pour retirer."
+)
+async def vip_bleeter(
+    interaction: discord.Interaction,
+    query: str,
+    bleeter: str = ""
+):
+    await defer_ephemeral(interaction)
+
+    # retrouver le VIP
+    row_i, vip = domain.find_vip_row_by_code_or_pseudo(sheets, query.strip())
+    if not row_i or not vip:
+        return await interaction.followup.send("❌ VIP introuvable (code ou pseudo).", ephemeral=True)
+
+    code = normalize_code(str(vip.get("code_vip", "")))
+    pseudo = display_name(vip.get("pseudo", code))
+
+    bleeter_clean = (bleeter or "").strip()
+
+    # update VIP
+    sheets.update_cell_by_header("VIP", row_i, "bleeter", bleeter_clean)
+
+    # log
+    sheets.append_by_headers("LOG", {
+        "timestamp": now_iso(),
+        "staff_id": str(interaction.user.id),
+        "code_vip": code,
+        "action_key": "SET_BLEETER",
+        "quantite": 1,
+        "points_unite": 0,
+        "delta_points": 0,
+        "raison": f"Bleeter défini à '{bleeter_clean}'" if bleeter_clean else "Bleeter retiré",
+    })
+
+    if bleeter_clean:
+        msg = f"✅ Bleeter mis à jour pour **{pseudo}** → **{bleeter_clean}**"
+    else:
+        msg = f"🗑️ Bleeter retiré pour **{pseudo}**"
+
+    await interaction.followup.send(msg, ephemeral=True)
+
 # ----------------------------
 # /vip sale (fenêtre de vente)
 # ----------------------------
