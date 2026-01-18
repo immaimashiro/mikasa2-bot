@@ -424,6 +424,57 @@ async def vip_card_show(interaction: discord.Interaction, query: str):
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 # ----------------------------
+# /vip sales_sum 
+# ----------------------------
+@vip_group.command(name="sales_summary", description="Résumé des ventes (staff).")
+@staff_check()
+@app_commands.describe(
+    periode="day | week | month",
+    categorie="Optionnel: TSHIRT, HOODIE, PANTS, JACKET, ACCESSORY, OTHER"
+)
+async def vip_sales_summary(interaction: discord.Interaction, periode: str = "day", categorie: str = ""):
+    await defer_ephemeral(interaction)
+
+    periode = (periode or "day").strip().lower()
+    if periode not in ("day", "week", "month"):
+        return await interaction.followup.send("❌ `periode` doit être: day / week / month", ephemeral=True)
+
+    start, end, ordered, total = domain.sales_summary(sheets, period=periode, category=categorie.strip())
+
+    title_map = {"day": "📊 Résumé ventes du jour", "week": "📊 Résumé ventes de la semaine", "month": "📊 Résumé ventes du mois"}
+    title = title_map.get(periode, "📊 Résumé ventes")
+
+    if categorie:
+        title += f" • {categorie.upper()}"
+
+    emb = discord.Embed(
+        title=title,
+        description=f"🗓️ **{fmt_fr(start)} → {fmt_fr(end)}** (FR)\n"
+                    f"🧾 Ops: **{total['ops']}**\n"
+                    f"🛍️ ACHAT: **{total['achat_qty']}** | 🎟️ LIMITEE: **{total['lim_qty']}**\n"
+                    f"⭐ Points distribués: **{total['delta']}**",
+        color=discord.Color.gold()
+    )
+
+    if not ordered:
+        emb.add_field(name="Aucune donnée", value="Aucune vente enregistrée sur cette période.", inline=False)
+        return await interaction.followup.send(embed=emb, ephemeral=True)
+
+    # affiche top 15
+    lines = []
+    for staff_id, st in ordered[:15]:
+        lines.append(
+            f"• <@{staff_id}>: ops **{st['ops']}** | "
+            f"ACHAT **{st['achat_qty']}** | LIMITEE **{st['lim_qty']}** | "
+            f"pts **{st['delta']}**"
+        )
+
+    emb.add_field(name="Top vendeurs", value="\n".join(lines), inline=False)
+    emb.set_footer(text="Mikasa fait les comptes. Calculatrice dans une patte. 🐾")
+    await interaction.followup.send(embed=emb, ephemeral=True)
+
+
+# ----------------------------
 # /defi panel (HG)
 # ----------------------------
 @defi_group.command(name="panel", description="Ouvrir le panneau de validation des défis (HG).")
