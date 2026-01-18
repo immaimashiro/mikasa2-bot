@@ -877,6 +877,15 @@ async def vip_help(interaction: discord.Interaction, section: str = "tout"):
             "Astuce: utilisez `/vip sale <codeVIP/pseudo>` pour éviter de taper 2 commandes.",
         ]
 
+    if section in ("log", "tout"):
+        lines += [
+            "🧾 Vérification par le staff",
+            "Si tu as un doute sur tes points / une vente / un défi:\n",
+            "➡️ Demande à un vendeur.\n\n",
+            "Le staff peut vérifier ton historique via:\n",
+            "• **`/viplog <ton pseudo ou ton code>`**",
+        ]
+
     await interaction.followup.send("\n".join(lines), ephemeral=True)
 
 # VIP commandes
@@ -953,6 +962,286 @@ async def vip_edit(interaction: discord.Interaction, vip: str = "", recherche: s
         view=pick_view,
         ephemeral=True
     )
+
+#VIP niveau
+
+@bot.tree.command(name="niveau", description="Voir le niveau VIP d’un client (staff).")
+@staff_check()
+@app_commands.describe(query="Pseudo ou code VIP (SUB-XXXX-XXXX)")
+async def niveau(interaction: discord.Interaction, query: str):
+    await defer_ephemeral(interaction)
+
+    row_i, vip = domain.find_vip_row_by_code_or_pseudo(sheets, query.strip())
+    if not row_i or not vip:
+        return await interaction.followup.send("❌ VIP introuvable (pseudo/code).", ephemeral=True)
+
+    code = normalize_code(str(vip.get("code_vip", "")))
+    pseudo = display_name(vip.get("pseudo", code))
+    status = str(vip.get("status", "ACTIVE")).strip().upper()
+
+    try:
+        points = int(vip.get("points", 0) or 0)
+    except Exception:
+        points = 0
+    try:
+        lvl = int(vip.get("niveau", 1) or 1)
+    except Exception:
+        lvl = 1
+
+    rank, total = domain.get_rank_among_active(sheets, code)
+    unlocked = domain.get_all_unlocked_advantages(sheets, lvl)
+    nxt = domain.get_next_level(sheets, lvl)
+
+    if nxt:
+        nxt_lvl, nxt_min, _ = nxt
+        remaining = max(0, int(nxt_min) - points)
+        prog = int((points / max(1, int(nxt_min))) * 100)
+        next_line = f"Prochain: **Niveau {nxt_lvl}** à **{nxt_min}** pts | Progression **{prog}%** (reste {remaining})"
+    else:
+        next_line = "🔥 Niveau max atteint."
+
+    badge = "🟢" if status == "ACTIVE" else "🔴"
+
+    emb = discord.Embed(
+        title=f"{badge} Niveau VIP",
+        description=(
+            f"👤 **{pseudo}**\n"
+            f"🎴 `{code}`\n"
+            f"⭐ Points: **{points}**\n"
+            f"🏅 Niveau: **{lvl}**\n"
+            f"🏁 Rang: **#{rank} / {total}** (VIP actifs)\n\n"
+            f"⬆️ {next_line}"
+        ),
+        color=discord.Color.gold()
+    )
+    emb.add_field(name="🎁 Avantages débloqués", value=unlocked, inline=False)
+    emb.set_footer(text="Mikasa sort le registre. 🐾")
+
+    await interaction.followup.send(embed=emb, ephemeral=True)
+
+@bot.tree.command(name="niveau_top", description="Top VIP (actifs) par points (staff).")
+@staff_check()
+async def niveau_top(interaction: discord.Interaction):
+    await defer_ephemeral(interaction)
+
+    rows = sheets.get_all_records("VIP")
+    active = []
+    for r in rows:
+        status = str(r.get("status", "ACTIVE")).strip().upper()
+        if status != "ACTIVE":
+            continue
+        code = normalize_code(str(r.get("code_vip", "")))
+        pseudo = display_name(r.get("pseudo", code))
+        try:
+            pts = int(r.get("points", 0) or 0)
+        except Exception:
+            pts = 0
+        try:
+            lvl = int(r.get("niveau", 1) or 1)
+        except Exception:
+            lvl = 1
+        if code:
+            active.append((pts, lvl, pseudo, code))
+
+    if not active:
+        return await interaction.followup.send("😾 Aucun VIP actif trouvé.", ephemeral=True)
+
+    active.sort(key=lambda x: x[0], reverse=True)
+    top = active[:15]
+
+    lines = []
+    for i, (pts, lvl, pseudo, code) in enumerate(top, start=1):
+        lines.append(f"**{i}.** **{pseudo}** (`{code}`) — ⭐ {pts} pts • 🎖️ niv {lvl}")
+
+    emb = discord.Embed(
+        title="🏆 Top VIP (actifs)",
+        description="\n".join(lines),
+        color=discord.Color.purple()
+    )
+    emb.set_footer(text="Mikasa compte… *tap tap* 🐾")
+    await interaction.followup.send(embed=emb, ephemeral=True)
+
+@bot.tree.command(name="vipsearch", description="Rechercher un VIP (staff).")
+@staff_check()
+@app_commands.describe(term="Pseudo (partiel), code (partiel) ou discord_id (exact)")
+async def vipsearch(interaction: discord.Interaction, term: str):
+    await defer_ephemeral(interaction)
+
+    t = (term or "").strip()
+    if not t:
+        return await interaction.followup.send("❌ Donne un terme de recherche.", ephemeral=True)
+
+    rows = sheets.get_all_records("VIP")
+    out = []
+
+    # si num -> discord id
+    is_num = t.isdigit()
+
+    for r in rows:
+        code = normalize_code(str(r.get("code_vip", "")))
+        pseudo = display_name(r.get("pseudo", code))
+        did = str(r.get("discord_id", "")).strip()
+        status = str(r.get("status", "ACTIVE")).strip().upper()
+        try:
+            pts = int(r.get("points", 0) or 0)
+        except Exception:
+            pts = 0
+
+        hit = False
+        if is_num and did and did == t:
+            hit = True
+        if t.lower() in pseudo.lower():
+            hit = True
+        if t.upper() in code.upper():
+            hit = True
+
+        if hit:
+            badge = "🟢" if status == "ACTIVE" else "🔴"
+            out.append((status == "ACTIVE", pts, f"{badge} **{pseudo}** (`{code}`) — ⭐ {pts} pts" + (f" • <@{did}>" if did else "")))
+
+    if not out:
+        return await interaction.followup.send("😾 Aucun VIP trouvé.", ephemeral=True)
+
+    # actifs d’abord, puis plus de points
+    out.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    lines = [x[2] for x in out[:15]]
+
+    emb = discord.Embed(
+        title="🔎 Résultats VIP",
+        description="\n".join(lines),
+        color=discord.Color.blurple()
+    )
+    emb.set_footer(text="Astuce: cherche aussi par code SUB-…")
+    await interaction.followup.send(embed=emb, ephemeral=True)
+
+@bot.tree.command(name="vipstats", description="Stats globales VIP (staff).")
+@staff_check()
+async def vipstats(interaction: discord.Interaction):
+    await defer_ephemeral(interaction)
+
+    rows = sheets.get_all_records("VIP")
+    if not rows:
+        return await interaction.followup.send("😾 Aucun VIP en base.", ephemeral=True)
+
+    total = len(rows)
+    active = 0
+    disabled = 0
+    pts_active = 0
+    lvl_counts = {}
+
+    top_pts = []
+    for r in rows:
+        status = str(r.get("status", "ACTIVE")).strip().upper()
+        try:
+            pts = int(r.get("points", 0) or 0)
+        except Exception:
+            pts = 0
+        try:
+            lvl = int(r.get("niveau", 1) or 1)
+        except Exception:
+            lvl = 1
+
+        lvl_counts[lvl] = lvl_counts.get(lvl, 0) + 1
+
+        if status == "ACTIVE":
+            active += 1
+            pts_active += pts
+            code = normalize_code(str(r.get("code_vip", "")))
+            pseudo = display_name(r.get("pseudo", code))
+            top_pts.append((pts, pseudo, code))
+        else:
+            disabled += 1
+
+    avg = int(pts_active / max(1, active))
+
+    top_pts.sort(key=lambda x: x[0], reverse=True)
+    top3 = top_pts[:3]
+    top_lines = "\n".join([f"• **{p}** (`{c}`) — ⭐ {pts}" for pts, p, c in top3]) if top3 else "—"
+
+    # niveaux les plus fréquents (top 5)
+    lvl_top = sorted(lvl_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
+    lvl_lines = "\n".join([f"• Niveau **{lvl}**: **{n}** VIP" for lvl, n in lvl_top]) if lvl_top else "—"
+
+    emb = discord.Embed(
+        title="📊 Stats VIP",
+        description=(
+            f"👥 Total VIP: **{total}**\n"
+            f"🟢 Actifs: **{active}**\n"
+            f"🔴 Désactivés: **{disabled}**\n"
+            f"⭐ Moyenne points (actifs): **{avg}**"
+        ),
+        color=discord.Color.green()
+    )
+    emb.add_field(name="🏆 Top 3 (actifs)", value=top_lines, inline=False)
+    emb.add_field(name="🎖️ Répartition niveaux (top 5)", value=lvl_lines, inline=False)
+    emb.set_footer(text="Mikasa fait tourner Excel dans sa tête. 🐾")
+
+    await interaction.followup.send(embed=emb, ephemeral=True)
+
+@bot.tree.command(name="vipstats", description="Stats globales VIP (staff).")
+@staff_check()
+async def vipstats(interaction: discord.Interaction):
+    await defer_ephemeral(interaction)
+
+    rows = sheets.get_all_records("VIP")
+    if not rows:
+        return await interaction.followup.send("😾 Aucun VIP en base.", ephemeral=True)
+
+    total = len(rows)
+    active = 0
+    disabled = 0
+    pts_active = 0
+    lvl_counts = {}
+
+    top_pts = []
+    for r in rows:
+        status = str(r.get("status", "ACTIVE")).strip().upper()
+        try:
+            pts = int(r.get("points", 0) or 0)
+        except Exception:
+            pts = 0
+        try:
+            lvl = int(r.get("niveau", 1) or 1)
+        except Exception:
+            lvl = 1
+
+        lvl_counts[lvl] = lvl_counts.get(lvl, 0) + 1
+
+        if status == "ACTIVE":
+            active += 1
+            pts_active += pts
+            code = normalize_code(str(r.get("code_vip", "")))
+            pseudo = display_name(r.get("pseudo", code))
+            top_pts.append((pts, pseudo, code))
+        else:
+            disabled += 1
+
+    avg = int(pts_active / max(1, active))
+
+    top_pts.sort(key=lambda x: x[0], reverse=True)
+    top3 = top_pts[:3]
+    top_lines = "\n".join([f"• **{p}** (`{c}`) — ⭐ {pts}" for pts, p, c in top3]) if top3 else "—"
+
+    # niveaux les plus fréquents (top 5)
+    lvl_top = sorted(lvl_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
+    lvl_lines = "\n".join([f"• Niveau **{lvl}**: **{n}** VIP" for lvl, n in lvl_top]) if lvl_top else "—"
+
+    emb = discord.Embed(
+        title="📊 Stats VIP",
+        description=(
+            f"👥 Total VIP: **{total}**\n"
+            f"🟢 Actifs: **{active}**\n"
+            f"🔴 Désactivés: **{disabled}**\n"
+            f"⭐ Moyenne points (actifs): **{avg}**"
+        ),
+        color=discord.Color.green()
+    )
+    emb.add_field(name="🏆 Top 3 (actifs)", value=top_lines, inline=False)
+    emb.add_field(name="🎖️ Répartition niveaux (top 5)", value=lvl_lines, inline=False)
+    emb.set_footer(text="Mikasa fait tourner Excel dans sa tête. 🐾")
+
+    await interaction.followup.send(embed=emb, ephemeral=True)
+
 
 #VIP help
 
