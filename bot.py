@@ -272,7 +272,7 @@ async def vip_sale(interaction: discord.Interaction, query: str):
         services=sheets,         # SheetsService
         code_vip=code,
         vip_pseudo=pseudo,
-        author_is_hg=domain.is_hg_slash(interaction),  # ou ta fonction is_hg_slash
+        author_is_hg=is_hg_slash(interaction),  # ou ma fonction is_hg_slash
     )
 
     await interaction.followup.send(
