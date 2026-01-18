@@ -64,6 +64,27 @@ bot.tree.add_command(defi_group)
 bot.tree.add_command(cave_group)
 
 # ----------------------------
+# VIP autocomplete cache
+# ----------------------------
+_VIP_CACHE = {"ts": 0.0, "rows": []}
+
+def _vip_cache_get():
+    import time
+    now = time.time()
+    # refresh toutes les 60s
+    if not _VIP_CACHE["rows"] or (now - _VIP_CACHE["ts"]) > 60:
+        _VIP_CACHE["rows"] = sheets.get_all_records("VIP")
+        _VIP_CACHE["ts"] = now
+    return _VIP_CACHE["rows"]
+
+def _vip_label(r: dict) -> str:
+    code = normalize_code(str(r.get("code_vip", "")))
+    pseudo = display_name(r.get("pseudo", code))
+    status = str(r.get("status", "ACTIVE")).strip().upper()
+    dot = "🟢" if status == "ACTIVE" else "🔴"
+    return f"{dot} {pseudo} ({code})"
+
+# ----------------------------
 # Perm checks
 # ----------------------------
 def has_role(member: discord.Member, role_id: int) -> bool:
@@ -185,6 +206,38 @@ async def post_weekly_challenges_announcement():
     lines.append("😼 Mikasa annonce la chasse aux photos. prrr 🐾")
 
     await ch.send("**" + title + "**\n" + "\n".join(lines))
+
+# VIP AUTOCOMPLETE
+
+async def vip_autocomplete(interaction: discord.Interaction, current: str):
+    current = (current or "").strip().lower()
+    rows = _vip_cache_get()
+
+    scored = []
+    for r in rows:
+        code = normalize_code(str(r.get("code_vip", "")))
+        pseudo = display_name(r.get("pseudo", code))
+        hay = f"{code} {pseudo}".lower()
+
+        if not current:
+            score = 1
+        elif hay.startswith(current):
+            score = 100
+        elif current in hay:
+            score = 50
+        else:
+            continue
+
+        scored.append((score, pseudo, code, r))
+
+    # tri: meilleur score puis alpha
+    scored.sort(key=lambda x: (-x[0], x[1].lower(), x[2]))
+
+    # Discord: max 25 suggestions
+    out = []
+    for score, pseudo, code, r in scored[:25]:
+        out.append(app_commands.Choice(name=f"{pseudo} ({code})", value=code))
+    return out
 
 # ----------------------------
 # /vip actions
@@ -796,26 +849,59 @@ async def vipme(interaction: discord.Interaction):
 
 #VIP edit
 
-@vip_group.command(name="edit", description="Modifier les infos d’un VIP via un panneau interactif (staff).")
+@vip_group.command(name="edit", description="Modifier un VIP (autocomplete + sélection interactive).")
 @staff_check()
-@app_commands.describe(query="Code VIP SUB-XXXX-XXXX ou pseudo")
-async def vip_edit(interaction: discord.Interaction, query: str):
+@app_commands.describe(vip="Choisis un VIP (autocomplete)", recherche="Optionnel si tu veux taper un nom approximatif")
+@app_commands.autocomplete(vip=vip_autocomplete)
+async def vip_edit(interaction: discord.Interaction, vip: str = "", recherche: str = ""):
     await defer_ephemeral(interaction)
 
-    row_i, vip = domain.find_vip_row_by_code_or_pseudo(sheets, query.strip())
-    if not row_i or not vip:
-        return await interaction.followup.send("❌ VIP introuvable (code ou pseudo).", ephemeral=True)
+    term = (vip or recherche or "").strip()
+    if not term:
+        return await interaction.followup.send("❌ Donne un VIP (autocomplete) ou une recherche.", ephemeral=True)
 
-    code = normalize_code(str(vip.get("code_vip", "")))
-    pseudo = display_name(vip.get("pseudo", code))
+    # 1) si vip vient de l'autocomplete, c'est un code direct
+    row_i, row = domain.find_vip_row_by_code(sheets, term)
+    if row_i and row:
+        code = normalize_code(str(row.get("code_vip", "")))
+        pseudo = display_name(row.get("pseudo", code))
+        view = ui.VipEditView(services=sheets, author_id=interaction.user.id, code_vip=code, vip_pseudo=pseudo)
+        return await interaction.followup.send(embed=view.build_embed(), view=view, ephemeral=True)
 
-    view = ui.VipEditView(
-        services=sheets,
+    # 2) sinon: recherche "floue" dans cache et propose une sélection interactive
+    q = term.lower()
+    rows = _vip_cache_get()
+
+    matches = []
+    for r in rows:
+        code = normalize_code(str(r.get("code_vip", "")))
+        pseudo = display_name(r.get("pseudo", code))
+        hay = f"{code} {pseudo}".lower()
+        if q in hay:
+            matches.append((pseudo, code, r))
+
+    # pas trouvé
+    if not matches:
+        return await interaction.followup.send("❌ Aucun VIP trouvé pour cette recherche.", ephemeral=True)
+
+    # si 1 match: ouvre direct
+    if len(matches) == 1:
+        pseudo, code, r = matches[0]
+        view = ui.VipEditView(services=sheets, author_id=interaction.user.id, code_vip=code, vip_pseudo=pseudo)
+        return await interaction.followup.send(embed=view.build_embed(), view=view, ephemeral=True)
+
+    # sinon: menu interactif (max 25)
+    matches = matches[:25]
+    pick_view = ui.VipPickView(
         author_id=interaction.user.id,
-        code_vip=code,
-        vip_pseudo=pseudo
+        services=sheets,
+        matches=[(p, c) for (p, c, _) in matches]
     )
-    await interaction.followup.send(embed=view.build_embed(), view=view, ephemeral=True)
+    await interaction.followup.send(
+        content="🔎 Plusieurs VIP trouvés. Choisis le bon dans la liste :",
+        view=pick_view,
+        ephemeral=True
+    )
 
 #VIP help
 
