@@ -533,3 +533,89 @@ def get_week_tasks_for_view(wk: int) -> List[str]:
     while len(tasks) < 4:
         tasks.append("(Défi non configuré)")
     return tasks
+
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+from services import PARIS_TZ, parse_iso_dt
+
+def _start_of_day_fr(dt):
+    dt = dt.astimezone(PARIS_TZ)
+    return dt.replace(hour=0, minute=0, second=0, microsecond=0)
+
+def _start_of_week_fr(dt):
+    # semaine = lundi 00:00
+    dt = _start_of_day_fr(dt)
+    return dt - timedelta(days=dt.weekday())
+
+def _start_of_month_fr(dt):
+    dt = _start_of_day_fr(dt)
+    return dt.replace(day=1)
+
+def sales_summary(
+    s: SheetsService,
+    period: str = "day",  # "day" | "week" | "month"
+    category: str = "",   # ex: "TSHIRT"
+):
+    now = now_fr()
+
+    if period == "week":
+        start = _start_of_week_fr(now)
+    elif period == "month":
+        start = _start_of_month_fr(now)
+    else:
+        start = _start_of_day_fr(now)
+
+    end = now
+
+    rows = s.get_all_records("LOG")
+
+    # staff_id -> stats
+    stats = {}
+    total = {"achat_qty": 0, "lim_qty": 0, "delta": 0, "ops": 0}
+
+    for r in rows:
+        dt = parse_iso_dt(str(r.get("timestamp", "")).strip())
+        if not dt:
+            continue
+        if not (start <= dt <= end):
+            continue
+
+        action = str(r.get("action_key", "")).strip().upper()
+        if action not in ("ACHAT", "ACHAT_LIMITEE"):
+            continue
+
+        raison = str(r.get("raison", "") or "").strip()
+        cat = extract_tag(raison, "vente:")
+        if category:
+            if not cat or cat.upper() != category.upper():
+                continue
+
+        staff_id = str(r.get("staff_id", "")).strip() or "UNKNOWN"
+        try:
+            qty = int(r.get("quantite", 0) or 0)
+        except Exception:
+            qty = 0
+        try:
+            delta = int(r.get("delta_points", 0) or 0)
+        except Exception:
+            delta = 0
+
+        if staff_id not in stats:
+            stats[staff_id] = {"achat_qty": 0, "lim_qty": 0, "delta": 0, "ops": 0}
+
+        if action == "ACHAT":
+            stats[staff_id]["achat_qty"] += qty
+            total["achat_qty"] += qty
+        else:
+            stats[staff_id]["lim_qty"] += qty
+            total["lim_qty"] += qty
+
+        stats[staff_id]["delta"] += delta
+        stats[staff_id]["ops"] += 1
+
+        total["delta"] += delta
+        total["ops"] += 1
+
+    # tri: plus gros delta points
+    ordered = sorted(stats.items(), key=lambda kv: kv[1]["delta"], reverse=True)
+    return start, end, ordered, total
