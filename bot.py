@@ -817,6 +817,20 @@ async def vip_edit(interaction: discord.Interaction, query: str):
     )
     await interaction.followup.send(embed=view.build_embed(), view=view, ephemeral=True)
 
+#VIP help
+
+@vip_group.command(name="help", description="Aide interactive VIP/Staff.")
+@staff_check()
+@app_commands.describe(section="all | vip | staff | defi")
+async def vip_help(interaction: discord.Interaction, section: str = "all"):
+    await defer_ephemeral(interaction)
+
+    section = (section or "all").strip().lower()
+    if section not in ("all", "vip", "staff", "defi"):
+        section = "all"
+
+    view = ui.VipHelpView(author_id=interaction.user.id, default_section=section)
+    await interaction.followup.send(embed=view.build_embed(), view=view, ephemeral=True)
 
 # ----------------------------
 # Ready + sync + scheduler
