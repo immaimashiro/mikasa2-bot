@@ -878,6 +878,10 @@ def _help_pages() -> Dict[str, Dict[str, str]]:
         "• `/vip card_show` → Afficher la carte VIP",
         "• `/vip bleeter` → Définir/retirer le bleeter d’un VIP (si tu l’as ajouté)",
         "• `/vip edit` → Panneau d’édition (si tu l’as ajouté)",
+        "• `/vipstats` → Stats globales VIP",
+        "• `/vipsearch` → Rechercher un VIP",
+        "• `/niveau_top` → Top VIP (actifs) par points",
+        "• `/niveau <pseudo ou code>` → Voir le niveau VIP d’un client",
     ]
 
     staff = [
