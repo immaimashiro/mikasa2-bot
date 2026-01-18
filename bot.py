@@ -1141,6 +1141,61 @@ async def vipsearch(interaction: discord.Interaction, term: str):
     emb.set_footer(text="Astuce: cherche aussi par code SUB-…")
     await interaction.followup.send(embed=emb, ephemeral=True)
 
+@safe_group_command(vip_group, name="log", description="Historique (LOG) d’un VIP (staff).")
+@staff_check()
+@app_commands.describe(query="Pseudo ou code VIP (SUB-XXXX-XXXX)")
+async def vip_log(interaction: discord.Interaction, query: str):
+    await defer_ephemeral(interaction)
+
+    # 1) retrouver le VIP
+    row_i, vip = domain.find_vip_row_by_code_or_pseudo(sheets, (query or "").strip())
+    if not row_i or not vip:
+        return await interaction.followup.send("❌ VIP introuvable (pseudo/code).", ephemeral=True)
+
+    code = normalize_code(str(vip.get("code_vip", "")))
+    pseudo = display_name(vip.get("pseudo", code))
+
+    # 2) récupérer les logs
+    rows = domain.log_rows_for_vip(sheets, code)
+    if not rows:
+        emb = discord.Embed(
+            title="🧾 /vip log",
+            description=f"👤 **{pseudo}** • `{code}`\n\nAucune entrée LOG trouvée.",
+            color=discord.Color.dark_grey()
+        )
+        return await interaction.followup.send(embed=emb, ephemeral=True)
+
+    # 3) tri par timestamp desc
+    def _dt(r):
+        return services.parse_iso_dt(str(r.get("timestamp", "")).strip()) or services.now_fr().replace(year=1970)
+
+    rows.sort(key=_dt, reverse=True)
+
+    # 4) affichage (15 dernières)
+    lines = []
+    for r in rows[:15]:
+        ts = str(r.get("timestamp", "")).strip()
+        staff_id = str(r.get("staff_id", "")).strip() or "?"
+        action = str(r.get("action_key", r.get("action", ""))).strip().upper() or "?"
+        qty = str(r.get("quantite", "1")).strip()
+        delta = str(r.get("delta_points", "0")).strip()
+        reason = str(r.get("raison", "") or "").strip()
+
+        reason_txt = (reason[:90] + "…") if len(reason) > 90 else reason
+        lines.append(
+            f"• `{ts}` • <@{staff_id}> • **{action}** x{qty} → **{delta}** pts"
+            + (f"\n  ↳ {reason_txt}" if reason_txt else "")
+        )
+
+    emb = discord.Embed(
+        title="🧾 Historique VIP (15 dernières)",
+        description=f"👤 **{pseudo}** • `{code}`\n\n" + "\n".join(lines),
+        color=discord.Color.blurple()
+    )
+    emb.set_footer(text="Mikasa remonte la piste des points. 🐾")
+
+    await interaction.followup.send(embed=emb, ephemeral=True)
+
 @safe_tree_command(name="vipstats", description="Stats globales VIP (staff).")
 @staff_check()
 async def vipstats(interaction: discord.Interaction):
