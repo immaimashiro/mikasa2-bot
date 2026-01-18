@@ -794,6 +794,30 @@ async def vipme(interaction: discord.Interaction):
     view = ui.VipHubView(services=sheets, code_vip=code, vip_pseudo=pseudo)
     await interaction.followup.send(embed=view.hub_embed(), view=view, ephemeral=True)
 
+#VIP edit
+
+@vip_group.command(name="edit", description="Modifier les infos d’un VIP via un panneau interactif (staff).")
+@staff_check()
+@app_commands.describe(query="Code VIP SUB-XXXX-XXXX ou pseudo")
+async def vip_edit(interaction: discord.Interaction, query: str):
+    await defer_ephemeral(interaction)
+
+    row_i, vip = domain.find_vip_row_by_code_or_pseudo(sheets, query.strip())
+    if not row_i or not vip:
+        return await interaction.followup.send("❌ VIP introuvable (code ou pseudo).", ephemeral=True)
+
+    code = normalize_code(str(vip.get("code_vip", "")))
+    pseudo = display_name(vip.get("pseudo", code))
+
+    view = ui.VipEditView(
+        services=sheets,
+        author_id=interaction.user.id,
+        code_vip=code,
+        vip_pseudo=pseudo
+    )
+    await interaction.followup.send(embed=view.build_embed(), view=view, ephemeral=True)
+
+
 # ----------------------------
 # Ready + sync + scheduler
 # ----------------------------
