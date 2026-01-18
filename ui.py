@@ -30,6 +30,152 @@ CATEGORIES = [
     ("Autre", "OTHER"),
 ]
 
+import discord
+from discord import ui
+
+class SaleCartView(ui.View):
+    def __init__(self, *, author_id: int, categories: list):
+        super().__init__(timeout=15 * 60)  # 15 min
+        self.author_id = author_id
+        self.categories = categories
+
+        self.cart = {}  # {category: {"normal": int, "limitee": int}}
+        self.current_category = categories[0][1]
+        self.note = ""
+
+        self.add_item(CategorySelect(self))
+        self._refresh_buttons()
+
+    # --------- helpers ---------
+
+    def ensure_category(self):
+        if self.current_category not in self.cart:
+            self.cart[self.current_category] = {"normal": 0, "limitee": 0}
+
+    def build_embed(self):
+        self.ensure_category()
+        c = self.cart[self.current_category]
+
+        emb = discord.Embed(
+            title="🧾 Fenêtre de vente SubUrban",
+            description=(
+                f"👤 **Vendeur** : <@{self.author_id}>\n"
+                f"🏷️ **Catégorie** : `{self.current_category}`\n\n"
+                f"🛍️ **Catégorie actuelle**\n"
+                f"• ACHAT (normal) : **{c['normal']}**\n"
+                f"• ACHAT_LIMITEE : **{c['limitee']}**\n\n"
+            ),
+            color=discord.Color.blurple()
+        )
+
+        if self.cart:
+            lines = []
+            for cat, v in self.cart.items():
+                if v["normal"] > 0 or v["limitee"] > 0:
+                    lines.append(
+                        f"• `{cat}` → Normal **{v['normal']}** | Limitée **{v['limitee']}**"
+                    )
+            if lines:
+                emb.add_field(
+                    name="🛒 Panier total",
+                    value="\n".join(lines),
+                    inline=False
+                )
+
+        emb.add_field(
+            name="📝 Note",
+            value=self.note or "*Aucune*",
+            inline=False
+        )
+
+        emb.set_footer(text="Astuce : tu peux changer de catégorie et revenir modifier.")
+        return emb
+
+    async def refresh(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(
+            embed=self.build_embed(),
+            view=self
+        )
+
+    def _refresh_buttons(self):
+        self.clear_items()
+        self.add_item(CategorySelect(self))
+        self.add_item(AdjustButton("+ Normal", "normal", +1, self))
+        self.add_item(AdjustButton("− Normal", "normal", -1, self))
+        self.add_item(AdjustButton("+ Limitée", "limitee", +1, self))
+        self.add_item(AdjustButton("− Limitée", "limitee", -1, self))
+        self.add_item(NoteButton(self))
+        self.add_item(ValidateButton(self))
+
+    # --------- lifecycle ---------
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+
+class CategorySelect(ui.Select):
+    def __init__(self, view: SaleCartView):
+        options = [
+            discord.SelectOption(label=label, value=value)
+            for label, value in view.categories
+        ]
+        super().__init__(
+            placeholder="Choisir une catégorie d’articles...",
+            options=options
+        )
+        self.sale_view = view
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.sale_view.author_id:
+            return await interaction.response.send_message("❌ Ce n’est pas ta vente.", ephemeral=True)
+
+        self.sale_view.current_category = self.values[0]
+        self.sale_view.ensure_category()
+        await self.sale_view.refresh(interaction)
+
+
+class AdjustButton(ui.Button):
+    def __init__(self, label, field, delta, view: SaleCartView):
+        super().__init__(label=label, style=discord.ButtonStyle.secondary)
+        self.field = field
+        self.delta = delta
+        self.sale_view = view
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.sale_view.author_id:
+            return await interaction.response.send_message("❌ Ce n’est pas ta vente.", ephemeral=True)
+
+        self.sale_view.ensure_category()
+        v = self.sale_view.cart[self.sale_view.current_category]
+        v[self.field] = max(0, v[self.field] + self.delta)
+        await self.sale_view.refresh(interaction)
+
+
+class NoteButton(ui.Button):
+    def __init__(self, view: SaleCartView):
+        super().__init__(label="📝 Note", style=discord.ButtonStyle.primary)
+        self.sale_view = view
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.sale_view.author_id:
+            return await interaction.response.send_message("❌ Ce n’est pas ta vente.", ephemeral=True)
+
+        modal = NoteModal(self.sale_view)
+        await interaction.response.send_modal(modal)
+
+
+class NoteModal(ui.Modal, title="Note de vente"):
+    note = ui.TextInput(label="Note", required=False, max_length=200)
+
+    def __init__(self, view: SaleCartView):
+        super().__init__()
+        self.sale_view = view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        self.sale_view.note = self.note.value.strip()
+        await self.sale_view.refresh(interaction)
+
+
 class SaleCategorySelect(discord.ui.Select):
     def __init__(self):
         options = [discord.SelectOption(label=label, value=value) for label, value in CATEGORIES]
@@ -202,6 +348,34 @@ class SaleNoteModal(discord.ui.Modal, title="Note de vente"):
     async def on_submit(self, interaction: discord.Interaction):
         self._view.note = str(self.note.value or "").strip()
         await self._view.refresh(interaction)
+
+class ValidateButton(ui.Button):
+    def __init__(self, view: SaleCartView):
+        super().__init__(
+            label="✅ VALIDER",
+            style=discord.ButtonStyle.success
+        )
+        self.sale_view = view
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.sale_view.author_id:
+            return await interaction.response.send_message("❌ Ce n’est pas ta vente.", ephemeral=True)
+
+        # 👉 ICI tu branches ta logique existante
+        # for category, values in self.sale_view.cart.items():
+        #   if values["normal"] > 0:
+        #       add_points_by_action(..., "ACHAT", values["normal"], reason=f"vente:{category}")
+        #   if values["limitee"] > 0:
+        #       add_points_by_action(..., "ACHAT_LIMITEE", values["limitee"], reason=f"vente:{category}")
+
+        for item in self.sale_view.children:
+            item.disabled = True
+
+        await interaction.response.edit_message(
+            content="✅ **Vente enregistrée avec succès.**",
+            embed=None,
+            view=self.sale_view
+        )
 
 
 # ---------------------------------------
@@ -482,3 +656,4 @@ class DefiWeek12View(discord.ui.View):
 
         await interaction.message.edit(embed=emb, view=self)
         await interaction.followup.send("✅ Freestyle enregistré.", ephemeral=True)
+
