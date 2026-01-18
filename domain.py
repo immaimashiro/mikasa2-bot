@@ -345,7 +345,10 @@ def add_points_by_action(
 ):
     action_key = (action_key or "").strip().upper()
     code = normalize_code(code_vip)
-
+    
+    ws_vip = services.ws("VIP")
+    ws_actions = services.ws("ACTIONS")
+    ws_log = services.ws("LOG")
     employee_can = employee_can or EMPLOYEE_ALLOWED_ACTIONS
 
     if not author_is_hg and action_key not in employee_can:
