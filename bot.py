@@ -801,7 +801,7 @@ async def vip_help(interaction: discord.Interaction, section: str = "tout"):
     if section in ("vip", "tout"):
         lines += [
             "",
-            "### VIP",
+            "### Gestion du VIP",
             "• `/vip create` Créer un VIP",
             "• `/vip add` Ajouter une action/points",
             "• `/vip sale` Fenêtre panier de vente",
