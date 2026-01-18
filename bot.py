@@ -265,7 +265,7 @@ async def vip_autocomplete(interaction: discord.Interaction, current: str):
 # ----------------------------
 # /vip actions
 # ----------------------------
-@safe_group_command(name="actions", description="Liste des actions et points (staff).")
+@safe_group_command(vip_group, name="actions", description="Liste des actions et points (staff).")
 @staff_check()
 async def vip_actions(interaction: discord.Interaction):
     await defer_ephemeral(interaction)
@@ -290,7 +290,7 @@ async def vip_actions(interaction: discord.Interaction):
 # ----------------------------
 # /vip add
 # ----------------------------
-@safe_group_command(name="add", description="Ajouter une action/points à un VIP (staff).")
+@safe_group_command(vip_group, name="add", description="Ajouter une action/points à un VIP (staff).")
 @staff_check()
 @app_commands.describe(code_vip="SUB-XXXX-XXXX", action_key="Action", quantite="Quantité", raison="Optionnel")
 async def vip_add(interaction: discord.Interaction, code_vip: str, action_key: str, quantite: int, raison: str = ""):
@@ -319,7 +319,7 @@ async def vip_add(interaction: discord.Interaction, code_vip: str, action_key: s
 # /vip bleeter (fenêtre de vente)
 # ------------------------------
 
-@safe_group_command(name="bleeter", description="Ajouter ou modifier le Bleeter d’un VIP (staff).")
+@safe_group_command(vip_group, name="bleeter", description="Ajouter ou modifier le Bleeter d’un VIP (staff).")
 @staff_check()
 @app_commands.describe(
     query="Code VIP SUB-XXXX-XXXX ou pseudo",
@@ -376,7 +376,7 @@ CATEGORIES = [
     ("Autre", "OTHER"),
 ]
 
-@safe_group_command(name="sale", description="Ouvrir une fenêtre de vente (panier) pour un VIP.")
+@safe_group_command(vip_group, name="sale", description="Ouvrir une fenêtre de vente (panier) pour un VIP.")
 @staff_check()
 @app_commands.describe(query="Code VIP SUB-XXXX-XXXX ou pseudo")
 async def vip_sale(interaction: discord.Interaction, query: str):
@@ -408,7 +408,7 @@ async def vip_sale(interaction: discord.Interaction, query: str):
 # ----------------------------
 # /vip create
 # ----------------------------
-@safe_group_command(name="create", description="Créer un profil VIP (staff).")
+@safe_group_command(vip_group, name="create", description="Créer un profil VIP (staff).")
 @staff_check()
 @app_commands.describe(
     pseudo="Nom/Pseudo RP (obligatoire)",
@@ -494,7 +494,7 @@ async def vip_create(
 # ----------------------------
 # /vip card_generate (dans n’importe quel salon)
 # ----------------------------
-@safe_group_command(name="card_generate", description="Générer la carte VIP (staff).")
+@safe_group_command(vip_group, name="card_generate", description="Générer la carte VIP (staff).")
 @staff_check()
 @app_commands.describe(code_vip="SUB-XXXX-XXXX")
 async def vip_card_generate(interaction: discord.Interaction, code_vip: str):
@@ -549,7 +549,7 @@ async def vip_card_generate(interaction: discord.Interaction, code_vip: str):
 # ----------------------------
 # /vip card_show
 # ----------------------------
-@safe_group_command(name="card_show", description="Afficher une carte VIP (staff).")
+@safe_group_command(vip_group, name="card_show", description="Afficher une carte VIP (staff).")
 @staff_check()
 @app_commands.describe(query="SUB-XXXX-XXXX ou pseudo")
 async def vip_card_show(interaction: discord.Interaction, query: str):
@@ -579,7 +579,7 @@ async def vip_card_show(interaction: discord.Interaction, query: str):
 # ----------------------------
 # /vip sales_sum 
 # ----------------------------
-@safe_group_command(name="sales_summary", description="Résumé des ventes (staff).")
+@safe_group_command(vip_group, name="sales_summary", description="Résumé des ventes (staff).")
 @staff_check()
 @app_commands.describe(
     periode="day | week | month",
@@ -809,7 +809,7 @@ async def cave_info(interaction: discord.Interaction, term: str):
 
 #VIP HELP
 
-@safe_group_command(name="guide", description="Guide VIP – informations pour les clients VIP.")
+@safe_group_command(vip_group, name="guide", description="Guide VIP – informations pour les clients VIP.")
 async def vip_guide(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
@@ -860,7 +860,7 @@ async def vip_guide(interaction: discord.Interaction):
 
     await interaction.followup.send(embed=embed, ephemeral=True)
 
-@safe_group_command(name="staff_guide", description="Guide interactif VIP/Staff.")
+@safe_group_command(vip_group, name="staff_guide", description="Guide interactif VIP/Staff.")
 @staff_check()
 @app_commands.describe(section="vip | staff | defi | tout")
 async def vip_help(interaction: discord.Interaction, section: str = "tout"):
@@ -936,7 +936,7 @@ async def vipme(interaction: discord.Interaction):
 
 #VIP edit
 
-@safe_group_command(name="edit", description="Modifier un VIP (autocomplete + sélection interactive).")
+@safe_group_command(vip_group, name="edit", description="Modifier un VIP (autocomplete + sélection interactive).")
 @staff_check()
 @app_commands.describe(vip="Choisis un VIP (autocomplete)", recherche="Optionnel si tu veux taper un nom approximatif")
 @app_commands.autocomplete(vip=vip_autocomplete)
@@ -1205,90 +1205,6 @@ async def vipstats(interaction: discord.Interaction):
 
     await interaction.followup.send(embed=emb, ephemeral=True)
 
-@safe_tree_command(name="vipstats", description="Stats globales VIP (staff).")
-@staff_check()
-async def vipstats(interaction: discord.Interaction):
-    await defer_ephemeral(interaction)
-
-    rows = sheets.get_all_records("VIP")
-    if not rows:
-        return await interaction.followup.send("😾 Aucun VIP en base.", ephemeral=True)
-
-    total = len(rows)
-    active = 0
-    disabled = 0
-    pts_active = 0
-    lvl_counts = {}
-
-    top_pts = []
-    for r in rows:
-        status = str(r.get("status", "ACTIVE")).strip().upper()
-        try:
-            pts = int(r.get("points", 0) or 0)
-        except Exception:
-            pts = 0
-        try:
-            lvl = int(r.get("niveau", 1) or 1)
-        except Exception:
-            lvl = 1
-
-        lvl_counts[lvl] = lvl_counts.get(lvl, 0) + 1
-
-        if status == "ACTIVE":
-            active += 1
-            pts_active += pts
-            code = normalize_code(str(r.get("code_vip", "")))
-            pseudo = display_name(r.get("pseudo", code))
-            top_pts.append((pts, pseudo, code))
-        else:
-            disabled += 1
-
-    avg = int(pts_active / max(1, active))
-
-    top_pts.sort(key=lambda x: x[0], reverse=True)
-    top3 = top_pts[:3]
-    top_lines = "\n".join([f"• **{p}** (`{c}`) — ⭐ {pts}" for pts, p, c in top3]) if top3 else "—"
-
-    # niveaux les plus fréquents (top 5)
-    lvl_top = sorted(lvl_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
-    lvl_lines = "\n".join([f"• Niveau **{lvl}**: **{n}** VIP" for lvl, n in lvl_top]) if lvl_top else "—"
-
-    emb = discord.Embed(
-        title="📊 Stats VIP",
-        description=(
-            f"👥 Total VIP: **{total}**\n"
-            f"🟢 Actifs: **{active}**\n"
-            f"🔴 Désactivés: **{disabled}**\n"
-            f"⭐ Moyenne points (actifs): **{avg}**"
-        ),
-        color=discord.Color.green()
-    )
-    emb.add_field(name="🏆 Top 3 (actifs)", value=top_lines, inline=False)
-    emb.add_field(name="🎖️ Répartition niveaux (top 5)", value=lvl_lines, inline=False)
-    emb.set_footer(text="Mikasa fait tourner Excel dans sa tête. 🐾")
-
-    await interaction.followup.send(embed=emb, ephemeral=True)
-
-
-#VIP help
-
-def _vip_has_command(name: str) -> bool:
-    return any(cmd.name == name for cmd in safe_group_commands)
-
-if not _vip_has_command("guide"):
-    @safe_group_command(name="guide", description="Guide interactif VIP/Staff.")
-    @staff_check()
-    @app_commands.describe(section="all | vip | staff | defi")
-    async def vip_guide(interaction: discord.Interaction, section: str = "all"):
-        await defer_ephemeral(interaction)
-
-        section = (section or "all").strip().lower()
-        if section not in ("all", "vip", "staff", "defi"):
-            section = "all"
-
-        view = ui.VipHelpView(author_id=interaction.user.id, default_section=section)
-        await interaction.followup.send(embed=view.build_embed(), view=view, ephemeral=True)
-
 # ----------------------------
 # Ready + sync + scheduler
 # ----------------------------
@@ -1298,19 +1214,8 @@ async def on_ready():
 
     guild = discord.Object(id=GUILD_ID)
 
-    # ⚠️ Reset commands de la guilde (à faire une fois)
-    bot.tree.clear_commands(guild=guild)
-    await bot.tree.sync(guild=guild)
-
-    # Réinjecte les globales puis resync
-    bot.tree.copy_global_to(guild=guild)
-    await bot.tree.sync(guild=guild)
-
-    print(f"Slash commands sync (reset) sur GUILD_ID={GUILD_ID}")
-    
-    # Sync sur ton serveur (évite les surprises)
     try:
-        guild = discord.Object(id=GUILD_ID)
+        # Sync uniquement sur la guilde (rapide et stable)
         bot.tree.copy_global_to(guild=guild)
         await bot.tree.sync(guild=guild)
         print(f"Slash commands sync sur GUILD_ID={GUILD_ID}")
@@ -1324,7 +1229,6 @@ async def on_ready():
         scheduler.add_job(lambda: bot.loop.create_task(post_weekly_challenges_announcement()), trigger)
         scheduler.start()
         print("Scheduler: annonces hebdo activées (vendredi 17:00).")
-
 # ----------------------------
 # Run
 # ----------------------------
