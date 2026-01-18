@@ -979,3 +979,54 @@ class VipHelpCloseButton(ui.Button):
         for item in self.view.children:
             item.disabled = True
         await interaction.response.edit_message(content="✅ Aide fermée.", embed=None, view=self.view)
+
+class VipPickView(ui.View):
+    def __init__(self, *, author_id: int, services, matches: list[tuple[str, str]]):
+        super().__init__(timeout=3 * 60)
+        self.author_id = author_id
+        self.s = services
+        self.matches = matches
+        self.add_item(VipPickSelect(self))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(catify("😾 Pas touche."), ephemeral=True)
+            return False
+        return True
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+
+
+class VipPickSelect(ui.Select):
+    def __init__(self, view: VipPickView):
+        options = []
+        for pseudo, code in view.matches:
+            options.append(discord.SelectOption(label=f"{pseudo}", description=code, value=code))
+        super().__init__(
+            placeholder="Choisir le VIP…",
+            options=options,
+            min_values=1,
+            max_values=1
+        )
+        self.v = view
+
+    async def callback(self, interaction: discord.Interaction):
+        code = self.values[0]
+        row_i, vip = domain.find_vip_row_by_code(self.v.s, code)
+        if not row_i or not vip:
+            return await interaction.response.send_message("❌ VIP introuvable.", ephemeral=True)
+
+        pseudo = domain.display_name(vip.get("pseudo", code))
+        edit_view = VipEditView(
+            services=self.v.s,
+            author_id=interaction.user.id,
+            code_vip=code,
+            vip_pseudo=pseudo
+        )
+        await interaction.response.edit_message(
+            content="✅ VIP sélectionné. Panneau d’édition ouvert :",
+            embed=edit_view.build_embed(),
+            view=edit_view
+        )
