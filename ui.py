@@ -273,6 +273,147 @@ class SaleValidateButton(ui.Button):
 
         await interaction.followup.send(receipt, ephemeral=True)
 
+# --- VIP UI (public) ---
+
+class VipHubView(discord.ui.View):
+    def __init__(self, *, services, code_vip: str, vip_pseudo: str):
+        super().__init__(timeout=5 * 60)
+        self.s = services
+        self.code = domain.normalize_code(code_vip)
+        self.vip_pseudo = domain.display_name(vip_pseudo or self.code)
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+
+    def hub_embed(self) -> discord.Embed:
+        e = discord.Embed(
+            title="🎟️ Espace VIP SubUrban",
+            description=(
+                f"👤 **{self.vip_pseudo}** • `{self.code}`\n\n"
+                "Choisis ce que tu veux voir :"
+            ),
+            color=discord.Color.dark_purple()
+        )
+        e.add_field(name="📈 Niveau", value="Voir ton niveau, tes points, tes avantages.", inline=False)
+        e.add_field(name="📸 Défis", value="Voir ton avancement des défis de la semaine.", inline=False)
+        e.set_footer(text="Mikasa ouvre le carnet VIP. 🐾")
+        return e
+
+    @discord.ui.button(label="📈 Niveau", style=discord.ButtonStyle.primary)
+    async def btn_level(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # réservé au VIP concerné (sécurité)
+        if not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("❌ Impossible ici.", ephemeral=True)
+
+        row_i, vip = domain.find_vip_row_by_discord_id(self.s, interaction.user.id)
+        if not row_i or not vip:
+            return await interaction.response.send_message("😾 Ton profil VIP n’est pas lié à ton Discord.", ephemeral=True)
+
+        code = domain.normalize_code(str(vip.get("code_vip", "")))
+        if code != self.code:
+            return await interaction.response.send_message("😾 Ce panneau ne correspond pas à ton VIP.", ephemeral=True)
+
+        emb = build_vip_level_embed(self.s, vip)
+        await interaction.response.send_message(embed=emb, ephemeral=True)
+
+    @discord.ui.button(label="📸 Défis", style=discord.ButtonStyle.secondary)
+    async def btn_defis(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("❌ Impossible ici.", ephemeral=True)
+
+        row_i, vip = domain.find_vip_row_by_discord_id(self.s, interaction.user.id)
+        if not row_i or not vip:
+            return await interaction.response.send_message("😾 Ton profil VIP n’est pas lié à ton Discord.", ephemeral=True)
+
+        code = domain.normalize_code(str(vip.get("code_vip", "")))
+        if code != self.code:
+            return await interaction.response.send_message("😾 Ce panneau ne correspond pas à ton VIP.", ephemeral=True)
+
+        emb = build_defi_status_embed(self.s, code, vip)
+        await interaction.response.send_message(embed=emb, ephemeral=True)
+
+
+def build_vip_level_embed(s, vip: dict) -> discord.Embed:
+    code = domain.normalize_code(str(vip.get("code_vip", "")))
+    pseudo = domain.display_name(vip.get("pseudo", code))
+    bleeter = str(vip.get("bleeter", "")).strip()
+    created_at = str(vip.get("created_at", "")).strip()
+
+    try:
+        points = int(vip.get("points", 0) or 0)
+    except Exception:
+        points = 0
+    try:
+        lvl = int(vip.get("niveau", 1) or 1)
+    except Exception:
+        lvl = 1
+
+    rank, total = domain.get_rank_among_active(s, code)
+    pmin, raw_av = domain.get_level_info(s, lvl)
+    unlocked = domain.get_all_unlocked_advantages(s, lvl)
+
+    nxt = domain.get_next_level(s, lvl)
+    if nxt:
+        nxt_lvl, nxt_min, _ = nxt
+        remaining = max(0, int(nxt_min) - points)
+        prog = int((points / max(1, int(nxt_min))) * 100)
+        next_line = f"Prochain: **Niveau {nxt_lvl}** à **{nxt_min}** pts\nProgression: **{prog}%** (reste {remaining} pts)"
+    else:
+        next_line = "🔥 Niveau max atteint."
+
+    e = discord.Embed(
+        title="🎫 VIP SubUrban",
+        description=(
+            f"👤 **{pseudo}**\n"
+            + (f"🐦 Bleeter: **{bleeter}**\n" if bleeter else "")
+            + f"🎴 Code: `{code}`\n"
+            + (f"📅 VIP depuis: `{created_at}`\n" if created_at else "")
+            + (f"🏁 Rang: **#{rank}** sur **{total}** VIP actifs\n" if total else "")
+            + f"\n📈 **Niveau {lvl}** | ⭐ **{points} points**\n"
+        ),
+        color=discord.Color.gold()
+    )
+    e.add_field(name="🎁 Avantages débloqués", value=unlocked, inline=False)
+    e.add_field(name="⬆️ Progression", value=next_line, inline=False)
+    e.set_footer(text="Mikasa montre le registre VIP. 🐾")
+    return e
+
+
+def build_defi_status_embed(s, code: str, vip: dict) -> discord.Embed:
+    wk = domain.current_challenge_week_number()
+    wk_key = domain.week_key_for(wk)
+    wk_label = domain.week_label_for(wk)
+
+    row_i, row = domain.ensure_defis_row(s, code, wk_key, wk_label)
+    done = domain.defis_done_count(row)
+
+    tasks = domain.get_week_tasks_for_view(wk)
+    lines = []
+    if wk == 12:
+        # semaine 12 = freestyle: on affiche juste l'info
+        lines.append("🎭 Semaine finale: freestyle (4 choix).")
+    else:
+        for i in range(1, 5):
+            ok = bool(str(row.get(f"d{i}", "")).strip())
+            mark = "✅" if ok else "❌"
+            lines.append(f"{mark} {tasks[i-1]}")
+
+    start, end = domain.challenge_week_window()
+    pseudo = domain.display_name(vip.get("pseudo", code))
+
+    e = discord.Embed(
+        title=f"📸 Défis de la semaine ({wk_label})",
+        description=(
+            f"👤 **{pseudo}** • `{code}`\n"
+            f"🗓️ **{start.strftime('%d/%m %H:%M')} → {end.strftime('%d/%m %H:%M')}** (FR)\n\n"
+            + "\n".join(lines)
+            + f"\n\n➡️ Progression: **{done}/4**"
+        ),
+        color=discord.Color.dark_purple()
+    )
+    e.set_footer(text="Mikasa coche les cases. 🐾")
+    return e
 
 # ==========================================================
 # Défis (HG) - on garde tes views existantes, inchangées
