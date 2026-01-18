@@ -726,6 +726,24 @@ async def vip_help(interaction: discord.Interaction, section: str = "tout"):
 
     await interaction.followup.send("\n".join(lines), ephemeral=True)
 
+# VIP commandes
+
+@bot.tree.command(name="vipme", description="Ouvrir ton espace VIP (niveau & défis).")
+async def vipme(interaction: discord.Interaction):
+    await defer_ephemeral(interaction)
+
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return await interaction.followup.send("❌ À utiliser sur le serveur.", ephemeral=True)
+
+    row_i, vip = domain.find_vip_row_by_discord_id(sheets, interaction.user.id)
+    if not row_i or not vip:
+        return await interaction.followup.send("😾 Ton Discord n’est pas lié à un VIP. Demande au staff.", ephemeral=True)
+
+    code = domain.normalize_code(str(vip.get("code_vip", "")))
+    pseudo = domain.display_name(vip.get("pseudo", code))
+
+    view = ui.VipHubView(services=sheets, code_vip=code, vip_pseudo=pseudo)
+    await interaction.followup.send(embed=view.hub_embed(), view=view, ephemeral=True)
 
 # ----------------------------
 # Ready + sync + scheduler
