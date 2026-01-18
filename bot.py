@@ -905,18 +905,22 @@ async def vip_edit(interaction: discord.Interaction, vip: str = "", recherche: s
 
 #VIP help
 
-@vip_group.command(name="manuel", description="Guide interactif VIP/Staff.")
-@staff_check()
-@app_commands.describe(section="all | vip | staff | defi")
-async def vip_help(interaction: discord.Interaction, section: str = "all"):
-    await defer_ephemeral(interaction)
+def _vip_has_command(name: str) -> bool:
+    return any(cmd.name == name for cmd in vip_group.commands)
 
-    section = (section or "all").strip().lower()
-    if section not in ("all", "vip", "staff", "defi"):
-        section = "all"
+if not _vip_has_command("guide"):
+    @vip_group.command(name="guide", description="Guide interactif VIP/Staff.")
+    @staff_check()
+    @app_commands.describe(section="all | vip | staff | defi")
+    async def vip_guide(interaction: discord.Interaction, section: str = "all"):
+        await defer_ephemeral(interaction)
 
-    view = ui.VipHelpView(author_id=interaction.user.id, default_section=section)
-    await interaction.followup.send(embed=view.build_embed(), view=view, ephemeral=True)
+        section = (section or "all").strip().lower()
+        if section not in ("all", "vip", "staff", "defi"):
+            section = "all"
+
+        view = ui.VipHelpView(author_id=interaction.user.id, default_section=section)
+        await interaction.followup.send(embed=view.build_embed(), view=view, ephemeral=True)
 
 # ----------------------------
 # Ready + sync + scheduler
