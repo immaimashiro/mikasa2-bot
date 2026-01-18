@@ -490,7 +490,7 @@ def current_challenge_week_number(now=None) -> int:
     from datetime import datetime
 
     now = now or now_fr()
-    start = os.getenv("CHALLENGE_START", "2026-01-02 17:00")
+    start = os.getenv("CHALLENGE_START", "2026-01-09 17:00")
     try:
         dt0 = datetime.strptime(start, "%Y-%m-%d %H:%M").replace(tzinfo=now.tzinfo)
     except Exception:
