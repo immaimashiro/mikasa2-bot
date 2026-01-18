@@ -853,3 +853,129 @@ class VipEditCloseButton(ui.Button):
             item.disabled = True
         await interaction.response.edit_message(content="✅ Panneau fermé.", embed=None, view=self.view)
 
+# --- HELP UI (staff) ---
+
+HELP_SECTIONS: List[Tuple[str, str]] = [
+    ("Tout", "all"),
+    ("VIP", "vip"),
+    ("Staff", "staff"),
+    ("Défis (HG)", "defi"),
+]
+
+def _help_pages() -> Dict[str, Dict[str, str]]:
+    """
+    Retourne un dict:
+    section -> {title, body}
+    """
+    vip = [
+        "**Commandes VIP (staff)**",
+        "• `/vip create` → Créer un profil VIP",
+        "• `/vip add` → Ajouter une action/points à un VIP",
+        "• `/vip actions` → Voir la liste des actions disponibles",
+        "• `/vip sale` → Fenêtre panier de vente (catégories + normal/limitée)",
+        "• `/vip sales_summary` → Résumé ventes (day/week/month + filtre catégorie)",
+        "• `/vip card_generate` → Générer la carte VIP (impression)",
+        "• `/vip card_show` → Afficher la carte VIP",
+        "• `/vip bleeter` → Définir/retirer le bleeter d’un VIP (si tu l’as ajouté)",
+        "• `/vip edit` → Panneau d’édition (si tu l’as ajouté)",
+    ]
+
+    staff = [
+        "**Rappels Staff**",
+        "• Les commandes VIP sont staff-only (employés + HG).",
+        "• Certaines actions peuvent être HG-only selon l’onglet `ACTIONS`.",
+        "• Pour une vente: utilise `/vip sale <code ou pseudo>` puis fais +/− par catégorie, et **VALIDER** à la caisse.",
+        "• Les logs sont dans l’onglet `LOG` (utile en cas de litige).",
+    ]
+
+    defi = [
+        "**Commandes Défis (HG)**",
+        "• `/defi panel` → Ouvrir le panneau de validation des défis (HG)",
+        "• `/defi week_announce` → Poster l’annonce hebdo (HG)",
+        "",
+        "**Défis côté VIP**",
+        "• (optionnel) `/vipme` ou panneau VIP si tu l’as ajouté (Niveau / Défis).",
+        "",
+        "_Note:_ les semaines dépendent de `CHALLENGE_START` (Railway).",
+    ]
+
+    all_lines = []
+    all_lines += vip + [""] + staff + [""] + defi
+
+    return {
+        "vip":  {"title": "📘 Aide Mikasa • VIP", "body": "\n".join(vip)},
+        "staff":{"title": "📘 Aide Mikasa • Staff", "body": "\n".join(staff)},
+        "defi": {"title": "📘 Aide Mikasa • Défis", "body": "\n".join(defi)},
+        "all":  {"title": "📘 Aide Mikasa • Tout", "body": "\n".join(all_lines)},
+    }
+
+
+class VipHelpView(ui.View):
+    def __init__(self, *, author_id: int, default_section: str = "all"):
+        super().__init__(timeout=6 * 60)
+        self.author_id = author_id
+        self.section = default_section if default_section in ("all", "vip", "staff", "defi") else "all"
+
+        self.add_item(VipHelpSectionSelect(self))
+        self.add_item(VipHelpQuickButton("📦 Tout", "all", self))
+        self.add_item(VipHelpQuickButton("🎟️ VIP", "vip", self))
+        self.add_item(VipHelpQuickButton("🧑‍💼 Staff", "staff", self))
+        self.add_item(VipHelpQuickButton("📸 Défis", "defi", self))
+        self.add_item(VipHelpCloseButton())
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(catify("😾 Pas touche. Ouvre ton propre `/vip help`."), ephemeral=True)
+            return False
+        return True
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+
+    def build_embed(self) -> discord.Embed:
+        pages = _help_pages()
+        page = pages.get(self.section, pages["all"])
+
+        e = discord.Embed(
+            title=page["title"],
+            description=page["body"],
+            color=discord.Color.blurple()
+        )
+        e.set_footer(text="Astuce: garde ce panneau ouvert pendant que tu bosses. 🐾")
+        return e
+
+    async def refresh(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+
+class VipHelpSectionSelect(ui.Select):
+    def __init__(self, view: VipHelpView):
+        options = [discord.SelectOption(label=lab, value=val) for lab, val in HELP_SECTIONS]
+        super().__init__(placeholder="Choisir une section…", options=options, min_values=1, max_values=1)
+        self.v = view
+
+    async def callback(self, interaction: discord.Interaction):
+        self.v.section = self.values[0]
+        await self.v.refresh(interaction)
+
+
+class VipHelpQuickButton(ui.Button):
+    def __init__(self, label: str, section: str, view: VipHelpView):
+        super().__init__(label=label, style=discord.ButtonStyle.secondary)
+        self.section = section
+        self.v = view
+
+    async def callback(self, interaction: discord.Interaction):
+        self.v.section = self.section
+        await self.v.refresh(interaction)
+
+
+class VipHelpCloseButton(ui.Button):
+    def __init__(self):
+        super().__init__(label="✅ Fermer", style=discord.ButtonStyle.success)
+
+    async def callback(self, interaction: discord.Interaction):
+        for item in self.view.children:
+            item.disabled = True
+        await interaction.response.edit_message(content="✅ Aide fermée.", embed=None, view=self.view)
