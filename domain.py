@@ -4,6 +4,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+from datetime import datetime
 
 from services import (
     SheetsService, S3Service,
@@ -345,15 +346,13 @@ def add_points_by_action(
 ):
     action_key = (action_key or "").strip().upper()
     code = normalize_code(code_vip)
-    
-    ws_vip = services.ws("VIP")
-    ws_actions = services.ws("ACTIONS")
-    ws_log = services.ws("LOG")
     employee_can = employee_can or EMPLOYEE_ALLOWED_ACTIONS
 
+    # Permissions employés
     if not author_is_hg and action_key not in employee_can:
         return False, f"😾 Action réservée aux HG. Employés: {', '.join(sorted(employee_can))}."
 
+    # Limites
     ok_lim, msg_lim, needs_confirm = check_action_limit(s, code, action_key, qty, reason or "", author_is_hg)
     if not ok_lim:
         if needs_confirm:
@@ -375,20 +374,30 @@ def add_points_by_action(
     if action_key not in actions:
         return False, f"Action inconnue: {action_key}."
 
-    pu = int(actions[action_key]["points_unite"])
+    try:
+        pu = int(actions[action_key]["points_unite"])
+    except Exception:
+        pu = 0
+
     delta = pu * qty
 
-    old_points = int(vip.get("points", 0) or 0)
+    try:
+        old_points = int(vip.get("points", 0) or 0)
+    except Exception:
+        old_points = 0
     new_points = old_points + delta
 
-    old_level = int(vip.get("niveau", 1) or 1)
+    try:
+        old_level = int(vip.get("niveau", 1) or 1)
+    except Exception:
+        old_level = 1
     new_level = calc_level(s, new_points)
 
-    # update VIP by header
+    # update VIP
     s.update_cell_by_header("VIP", row_i, "points", new_points)
     s.update_cell_by_header("VIP", row_i, "niveau", new_level)
 
-    # LOG append by headers
+    # append LOG
     s.append_by_headers("LOG", {
         "timestamp": now_iso(),
         "staff_id": str(staff_id),
@@ -400,8 +409,8 @@ def add_points_by_action(
         "raison": reason or "",
     })
 
+    # ✅ succès: on renvoie un tuple exploitable
     return True, (delta, new_points, old_level, new_level)
-
 
 # ----------------------------
 # Cave (BAN CREATE)
