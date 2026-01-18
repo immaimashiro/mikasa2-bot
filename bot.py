@@ -906,11 +906,11 @@ async def vip_help(interaction: discord.Interaction, section: str = "tout"):
 
     if section in ("log", "tout"):
         lines += [
-            "🧾 Vérification par le staff",
+            "### 🧾 Vérification par le staff",
             "Si tu as un doute sur tes points / une vente / un défi:\n",
             "➡️ Demande à un vendeur.\n\n",
             "Le staff peut vérifier ton historique via:\n",
-            "• **`/viplog <ton pseudo ou ton code>`**",
+            "• **`/vip log <ton pseudo ou ton code>`**",
         ]
 
     await interaction.followup.send("\n".join(lines), ephemeral=True)
