@@ -390,7 +390,7 @@ async def vip_card_generate(interaction: discord.Interaction, code_vip: str):
     if not s3.enabled():
         return await interaction.followup.send("❌ S3 non configuré (AWS_ENDPOINT_URL / BUCKET).", ephemeral=True)
 
-    await interaction.followup.send("🖨️ Mikasa imprime… *prrrt prrrt* 🐾", ephemeral=True)
+    await interaction.followup.send("🖨️ Mikasa imprime… *prrrt prrrt* 🐾", ephemeral=False)
 
     png = services.generate_vip_card_image(
         VIP_TEMPLATE_PATH, VIP_FONT_PATH,
@@ -404,11 +404,22 @@ async def vip_card_generate(interaction: discord.Interaction, code_vip: str):
     sheets.update_cell_by_header("VIP", row_i, "card_generated_by", str(interaction.user.id))
 
     file = discord.File(io.BytesIO(png), filename=f"VIP_{normalize_code(code_vip)}.png")
-    await interaction.followup.send(
-        content=f"✅ Carte VIP générée pour **{display_name(full_name)}**\n🔗 {url}",
-        file=file,
-        ephemeral=True
+
+    # 🔥 message PUBLIC
+    public_embed = discord.Embed(
+        title="🖨️ Impression carte VIP",
+        description=f"✅ Carte VIP générée pour **{display_name(full_name)}**\n🎴 Code: `{normalize_code(code_vip)}`\n👤 Imprimée par: {interaction.user.mention}",
+        color=discord.Color.green()
     )
+    public_embed.set_image(url=f"attachment://VIP_{normalize_code(code_vip)}.png")
+    public_embed.set_footer(text="Mikasa crache le papier… prrr 🐾")
+
+    # envoi dans le salon
+    await interaction.channel.send(embed=public_embed, file=file)
+
+    # et tu confirmes en privé (pour éviter spam)
+    await interaction.followup.send(f"✅ Impression envoyée dans {interaction.channel.mention}", ephemeral=True)
+
 
 # ----------------------------
 # /vip card_show
