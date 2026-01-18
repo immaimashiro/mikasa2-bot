@@ -860,6 +860,10 @@ async def vip_help(interaction: discord.Interaction, section: str = "tout"):
             "• `/vip card_show` Afficher la carte VIP",
             "• `/vip actions` Voir les actions",
             "• `/vip sales_summary` Résumé ventes",
+            "• `/vipstats` Stats globales VIP",
+            "• `/vipsearch` Rechercher un VIP",
+            "• `/niveau_top` Top VIP (actifs) par points",
+            "• `/niveau <pseudo ou code>` Voir le niveau VIP d’un client",
         ]
 
     if section in ("defi", "tout"):
