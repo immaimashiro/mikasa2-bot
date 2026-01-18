@@ -483,24 +483,26 @@ def week_label_for(k: int) -> str:
 
 def current_challenge_week_number(now=None) -> int:
     """
-    Semaine 1..12 basée sur CHALLENGE_START (FR).
-    Fenêtre de validation reste vendredi 17h -> vendredi 17h.
+    Semaine 1..12 basée sur CHALLENGE_WEEK_START (FR).
+    Par défaut: vendredi 17:00.
     """
     import os
     from datetime import datetime
 
     now = now or now_fr()
-    start = os.getenv("CHALLENGE_START", "2026-01-09 17:00")
+
+    start_raw = os.getenv("CHALLENGE_WEEK_START", "2026-01-09 17:00").strip()
     try:
-        dt0 = datetime.strptime(start, "%Y-%m-%d %H:%M").replace(tzinfo=now.tzinfo)
+        dt0 = datetime.strptime(start_raw, "%Y-%m-%d %H:%M").replace(tzinfo=now.tzinfo)
     except Exception:
-        dt0 = now.replace(year=2026, month=1, day=2, hour=17, minute=0, second=0, microsecond=0)
+        dt0 = now.replace(year=2026, month=1, day=9, hour=17, minute=0, second=0, microsecond=0)
+
+    if now < dt0:
+        return 1
 
     weeks_since = int(((now - dt0).total_seconds()) // (7 * 24 * 3600))
-    wk = (weeks_since % 12) + 1
-    if weeks_since < 0:
-        return 1
-    return wk
+    wk = weeks_since + 1  # semaine 1 au démarrage
+    return max(1, min(12, wk))
 
 def defis_done_count(row: Dict[str, Any]) -> int:
     return sum(1 for k in ["d1", "d2", "d3", "d4"] if str(row.get(k, "")).strip() != "")
@@ -548,7 +550,7 @@ def get_week_tasks_for_view(wk: int) -> List[str]:
 
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from services import PARIS_TZ, parse_iso_dt
+from services import PARIS_TZ
 
 def _start_of_day_fr(dt):
     dt = dt.astimezone(PARIS_TZ)
@@ -589,7 +591,7 @@ def sales_summary(
         dt = parse_iso_dt(str(r.get("timestamp", "")).strip())
         if not dt:
             continue
-        if not (start <= dt <= end):
+        if not (start <= dt < end):
             continue
 
         action = str(r.get("action_key", "")).strip().upper()
