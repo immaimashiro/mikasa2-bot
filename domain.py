@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
+from collections import defaultdict
 
 from services import (
     SheetsService, S3Service,
@@ -651,6 +652,78 @@ def sales_summary(
 QCM_DAILY_QUESTIONS = 5
 QCM_POINTS_PER_GOOD = 2
 QCM_WEEKLY_CAP = 70
+
+
+def qcm_week_id(now=None) -> str:
+    # identifiant stable: "2026-W04" par ex (ISO week)
+    now = now or now_fr()
+    iso = now.isocalendar()
+    return f"{iso.year}-W{iso.week:02d}"
+
+def qcm_weekly_leaderboard(s: SheetsService, now=None):
+    """
+    Retourne (week_id, ordered)
+    ordered = list[(discord_id:str, stats:dict)] trié par:
+      1) bonnes réponses (desc)
+      2) total répondu (desc)
+      3) temps moyen (asc)
+    Exige un onglet "QCM_LOG" avec colonnes:
+      week_id, discord_id, is_correct (TRUE/FALSE ou 1/0), elapsed_sec (int)
+    """
+    now = now or now_fr()
+    wk = qcm_week_id(now)
+
+    rows = s.get_all_records("QCM_LOG")
+    stats = defaultdict(lambda: {"good": 0, "total": 0, "elapsed": 0})
+
+    for r in rows:
+        if str(r.get("week_id", "")).strip() != wk:
+            continue
+        did = str(r.get("discord_id", "")).strip()
+        if not did:
+            continue
+
+        is_corr = str(r.get("is_correct", "")).strip().lower() in ("true", "1", "yes", "y")
+        try:
+            el = int(r.get("elapsed_sec", 0) or 0)
+        except Exception:
+            el = 0
+
+        st = stats[did]
+        st["total"] += 1
+        st["elapsed"] += max(0, el)
+        if is_corr:
+            st["good"] += 1
+
+    ordered = sorted(
+        stats.items(),
+        key=lambda kv: (-kv[1]["good"], -kv[1]["total"], (kv[1]["elapsed"] / max(1, kv[1]["total"])))
+    )
+    return wk, ordered
+
+def qcm_week_already_awarded(s: SheetsService, week_id: str) -> bool:
+    """
+    Anti double-award: on check dans LOG si on a déjà posé un marqueur.
+    """
+    for r in s.get_all_records("LOG"):
+        ak = str(r.get("action_key", "")).strip().upper()
+        if ak == "QCM_WEEK_AWARDED":
+            reason = str(r.get("raison", "") or "")
+            if f"week:{week_id}" in reason:
+                return True
+    return False
+
+def qcm_mark_week_awarded(s: SheetsService, week_id: str, staff_id: int = 0):
+    s.append_by_headers("LOG", {
+        "timestamp": now_iso(),
+        "staff_id": str(staff_id),
+        "code_vip": "",
+        "action_key": "QCM_WEEK_AWARDED",
+        "quantite": 1,
+        "points_unite": 0,
+        "delta_points": 0,
+        "raison": f"week:{week_id} | QCM weekly awards locked",
+    })
 
 def date_key_fr(dt=None) -> str:
     dt = dt or now_fr()
