@@ -1586,6 +1586,15 @@ async def hunt_daily(interaction: discord.Interaction):
             ephemeral=True
         )
 
+    jailed, until = hunt_services.is_jailed(sheets, interaction.user.id)
+    if jailed:
+        return await interaction.followup.send(
+            f"🚔 Tu es en prison jusqu’à **{until.astimezone(services.PARIS_TZ).strftime('%d/%m %H:%M')}**.\n"
+            "Mikasa gratte la porte: *prrr…* 🐾",
+            ephemeral=True
+        )
+
+
     # 3) anti double daily
     if hunt_services.daily_already_started(sheets, interaction.user.id):
         return await interaction.followup.send("😾 Daily déjà lancé aujourd’hui. Reviens demain.", ephemeral=True)
