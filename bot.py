@@ -231,6 +231,107 @@ async def post_weekly_challenges_announcement():
 
     await ch.send("**" + title + "**\n" + "\n".join(lines))
 
+async def post_qcm_weekly_announcement_and_awards():
+    if not ANNOUNCE_CHANNEL_ID:
+        return
+    ch = bot.get_channel(int(ANNOUNCE_CHANNEL_ID))
+    if not ch:
+        return
+
+    wk, ordered = domain.qcm_weekly_leaderboard(sheets)
+
+    # Pas de participants
+    if not ordered:
+        e = discord.Embed(
+            title="🏆 QCM Los Santos • Résultats hebdo",
+            description="🐾 Personne n’a joué cette semaine… Mikasa range le trophée dans un tiroir.",
+            color=discord.Color.dark_gold()
+        )
+        return await ch.send(embed=e)
+
+    # Anti double-award
+    if domain.qcm_week_already_awarded(sheets, wk):
+        already = True
+    else:
+        already = False
+
+    # Compose TOP
+    podium = ordered[:3]
+    lines = []
+    for i, (did, st) in enumerate(podium, start=1):
+        avg = int(st["elapsed"] / max(1, st["total"]))
+        medal = "🥇" if i == 1 else ("🥈" if i == 2 else "🥉")
+        lines.append(f"{medal} <@{did}> — ✅ **{st['good']}** / {st['total']} • ⏱️ ~{avg}s")
+
+    # Mentions bonus
+    bonus_lines = [
+        "🎁 **Bonus hebdo (raisonnable)**",
+        "• 🥇 +20 pts • 🥈 +15 pts • 🥉 +10 pts",
+        "• 👥 Participant (+5 pts) si au moins **5 questions** jouées sur la semaine",
+    ]
+
+    e = discord.Embed(
+        title=f"🏆 QCM Los Santos • Résultats • {wk}",
+        description="\n".join(lines),
+        color=discord.Color.gold()
+    )
+    e.add_field(name="Bonus", value="\n".join(bonus_lines), inline=False)
+
+    if already:
+        e.set_footer(text="⚠️ Bonus déjà distribués (anti double-award). 🐾")
+        await ch.send(embed=e)
+        return
+
+    # -------- Awards (system) --------
+    # 1) Podium
+    podium_bonus = [("QCM_BONUS_W1", 1), ("QCM_BONUS_W2", 1), ("QCM_BONUS_W3", 1)]
+    for idx, (did, st) in enumerate(podium):
+        # did = discord_id -> retrouver VIP
+        try:
+            did_int = int(did)
+        except Exception:
+            continue
+
+        row_i, vip = domain.find_vip_row_by_discord_id(sheets, did_int)
+        if not row_i or not vip:
+            continue
+
+        code = domain.normalize_code(str(vip.get("code_vip", "")))
+        action_key = podium_bonus[idx][0]
+        # Force HG (system)
+        domain.add_points_by_action(
+            sheets, code, action_key, 1, 0,
+            reason=f"QCM weekly podium | week:{wk}",
+            author_is_hg=True
+        )
+
+    # 2) Participant bonus (>= 5 réponses dans la semaine)
+    for did, st in ordered:
+        if st["total"] < 5:
+            continue
+        try:
+            did_int = int(did)
+        except Exception:
+            continue
+
+        row_i, vip = domain.find_vip_row_by_discord_id(sheets, did_int)
+        if not row_i or not vip:
+            continue
+
+        code = domain.normalize_code(str(vip.get("code_vip", "")))
+        domain.add_points_by_action(
+            sheets, code, "QCM_BONUS_PARTICIPANT", 1, 0,
+            reason=f"QCM weekly participation | week:{wk} | total:{st['total']}",
+            author_is_hg=True
+        )
+
+    # 3) Marqueur anti double-award
+    domain.qcm_mark_week_awarded(sheets, wk, staff_id=0)
+
+    e.set_footer(text="✅ Bonus distribués. Mikasa tamponne le classement. *clac* 🐾")
+    await ch.send(embed=e)
+
+
 # VIP AUTOCOMPLETE
 
 async def vip_autocomplete(interaction: discord.Interaction, current: str):
@@ -1392,6 +1493,9 @@ async def on_ready():
         bot._mikasa_scheduler_started = True
         trigger = CronTrigger(day_of_week="fri", hour=17, minute=0, timezone=services.PARIS_TZ)
         scheduler.add_job(lambda: bot.loop.create_task(post_weekly_challenges_announcement()), trigger)
+        # scheduler vendredi 17:05 (résultats QCM + bonus)
+        trigger_qcm = CronTrigger(day_of_week="fri", hour=17, minute=5, timezone=services.PARIS_TZ)
+        scheduler.add_job(lambda: bot.loop.create_task(post_qcm_weekly_announcement_and_awards()), trigger_qcm)
         scheduler.start()
         print("Scheduler: annonces hebdo activées (vendredi 17:00).")
 # ----------------------------
