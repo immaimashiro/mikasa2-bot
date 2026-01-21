@@ -1393,6 +1393,40 @@ import random
 
 LETTERS = ["A", "B", "C", "D"]
 
+def build_shuffled_question_from_sheet(row: dict):
+    """
+    row = ligne lue depuis QCM_QUESTIONS (via Sheets)
+    """
+
+    # réponses originales
+    base_choices = {
+        "A": str(row.get("a", "")).strip(),
+        "B": str(row.get("b", "")).strip(),
+        "C": str(row.get("c", "")).strip(),
+        "D": str(row.get("d", "")).strip(),
+    }
+
+    correct_letter = str(row.get("correct", "A")).strip().upper()
+    correct_text = base_choices.get(correct_letter)
+
+    # on mélange
+    shuffled = list(base_choices.values())
+    random.shuffle(shuffled)
+
+    # on retrouve où est passée la bonne réponse
+    new_correct_index = shuffled.index(correct_text)
+    new_correct_letter = LETTERS[new_correct_index]
+
+    return {
+        "qid": row.get("qid"),
+        "difficulty": row.get("difficulty"),
+        "tags": row.get("tags"),
+        "question": row.get("question"),
+        "choices": shuffled,                  # liste mélangée
+        "correct_letter": new_correct_letter, # A/B/C/D recalculé
+        "correct_text": correct_text,
+    }
+
 def build_shuffled_question(q: dict, *, rng: random.Random | None = None):
     rng = rng or random.Random()
 
