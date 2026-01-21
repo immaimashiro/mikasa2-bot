@@ -355,3 +355,113 @@ def weighted_choice(items: List[Tuple[str, int]]) -> str:
         if r <= acc:
             return val
     return items[-1][0] if items else ""
+
+# hunt_services.py (ajouts)
+from datetime import timedelta
+from services import now_fr, now_iso, PARIS_TZ
+
+T_PLAYERS = "HUNT_PLAYERS"   # déjà chez toi normalement
+T_LOG = "HUNT_LOG"
+
+def iso_fr(dt):
+    return dt.astimezone(PARIS_TZ).isoformat(timespec="seconds")
+
+def parse_iso_fr(s: str):
+    from datetime import datetime
+    try:
+        return datetime.fromisoformat(s).astimezone(PARIS_TZ)
+    except Exception:
+        return None
+
+def get_player(s, discord_id: int):
+    rows = s.get_all_records(T_PLAYERS)
+    did = str(discord_id)
+    for idx, r in enumerate(rows, start=2):
+        if str(r.get("discord_id","")).strip() == did:
+            return idx, r
+    return None
+
+def ensure_player(s, discord_id: int, code_vip: str = "", pseudo: str = ""):
+    got = get_player(s, discord_id)
+    if got:
+        return got
+    s.append_by_headers(T_PLAYERS, {
+        "discord_id": str(discord_id),
+        "code_vip": code_vip,
+        "pseudo": pseudo,
+        "hunt_dollars": 0,
+        "jail_until": "",
+        "heat": 0,           # récidive
+        "avatar_tag": "",    # ex: MAI/ROXY/...
+        "avatar_url": "",    # image portrait
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+    })
+    return get_player(s, discord_id)
+
+def is_jailed(s, discord_id: int):
+    got = get_player(s, discord_id)
+    if not got:
+        return False, None
+    _, row = got
+    until = parse_iso_fr(str(row.get("jail_until","") or "").strip())
+    if not until:
+        return False, None
+    return (now_fr() < until), until
+
+def add_heat(s, discord_id: int, amount: int):
+    got = ensure_player(s, discord_id)
+    row_i, row = got
+    heat = 0
+    try: heat = int(row.get("heat", 0) or 0)
+    except Exception: heat = 0
+    heat = max(0, min(100, heat + int(amount)))
+    s.update_cell_by_header(T_PLAYERS, row_i, "heat", heat)
+    s.update_cell_by_header(T_PLAYERS, row_i, "updated_at", now_iso())
+    return heat
+
+def set_jail(s, discord_id: int, hours: float, reason: str):
+    """
+    cap 12h. hours peut être décimal (0.5h=30min).
+    """
+    got = ensure_player(s, discord_id)
+    row_i, row = got
+
+    cap_hours = min(12.0, max(0.0, float(hours)))
+    until = now_fr() + timedelta(seconds=int(cap_hours * 3600))
+
+    s.update_cell_by_header(T_PLAYERS, row_i, "jail_until", iso_fr(until))
+    s.update_cell_by_header(T_PLAYERS, row_i, "updated_at", now_iso())
+
+    # log RP
+    try:
+        s.append_by_headers(T_LOG, {
+            "timestamp": now_iso(),
+            "discord_id": str(discord_id),
+            "type": "JAIL",
+            "value": f"{cap_hours:.2f}h",
+            "notes": reason[:500],
+        })
+    except Exception:
+        pass
+
+    return until
+
+def compute_sentence_hours(crime: str, heat: int, roll: int):
+    """
+    crime: 'STEAL' | 'KILL'
+    roll: d20 ou autre (pour variance)
+    """
+    heat = max(0, min(100, int(heat)))
+    # multiplicateur récidive 1.0 -> 1.4
+    mult = 1.0 + (0.4 * (heat / 100.0))
+
+    if crime == "STEAL":
+        # 0.5h -> 3h
+        base = 0.5 + (max(0, 18 - roll) / 18.0) * 2.5
+    else:  # KILL
+        # 4h -> 12h
+        base = 4.0 + (max(0, 18 - roll) / 18.0) * 8.0
+
+    hours = base * mult
+    return min(12.0, max(0.25, hours))
