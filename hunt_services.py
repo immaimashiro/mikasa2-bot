@@ -1,57 +1,44 @@
 # hunt_services.py
 # -*- coding: utf-8 -*-
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+import random
 
-import services  # ton services.py
-from services import SheetsService, now_fr, now_iso, PARIS_TZ
+from services import SheetsService, PARIS_TZ, now_fr, now_iso, normalize_code, display_name, challenge_week_window
+
 
 # ==========================================================
-# Tables Sheets attendues (tu as dit qu'elles existent déjà)
+# Tables Sheets (tu les as déjà dans ton Google Sheets)
 # ==========================================================
-# HUNT_PLAYERS: profil joueur (vip, avatar, progression, monnaie)
-# HUNT_DAILY: une ligne par jour et par joueur (anti double participation)
-# HUNT_WEEKLY: score hebdo par joueur (top semaine + bonus)
-# HUNT_KEYS: clés attribuées par la direction (claim staff) + coffre ouvert
-# HUNT_LOG: log RP (optionnel mais utile)
-
 T_PLAYERS = "HUNT_PLAYERS"
-T_DAILY   = "HUNT_DAILY"
-T_WEEKLY  = "HUNT_WEEKLY"
-T_KEYS    = "HUNT_KEYS"
-T_LOG     = "HUNT_LOG"
+T_DAILY = "HUNT_DAILY"
+T_WEEKLY = "HUNT_WEEKLY"
+T_KEYS = "HUNT_KEYS"
+T_LOG = "HUNT_LOG"
+T_ITEMS = "HUNT_ITEMS"
+T_BOSSES = "HUNT_BOSSES"
+T_REPUTATION = "HUNT_REPUTATION"
 
 
 # ==========================================================
-# Helpers date (jour FR)
+# Helpers clés
 # ==========================================================
+def today_key_fr(now: Optional[datetime] = None) -> str:
+    now = (now or now_fr()).astimezone(PARIS_TZ)
+    return now.strftime("%Y-%m-%d")
 
-def fr_day_key(dt: Optional[datetime] = None) -> str:
-    """YYYY-MM-DD (FR)"""
-    dt = dt or now_fr()
-    dt = dt.astimezone(PARIS_TZ)
-    return dt.strftime("%Y-%m-%d")
-
-def fr_week_key(dt: Optional[datetime] = None) -> str:
+def week_key_fr(now: Optional[datetime] = None) -> str:
     """
-    Semaine ISO "YYYY-Www" (FR).
-    Exemple: 2026-W03
+    Une clé stable hebdo basée sur ta fenêtre challenge_week_window()
+    (vendredi 17:00 -> vendredi 17:00).
     """
-    dt = dt or now_fr()
-    dt = dt.astimezone(PARIS_TZ)
-    y, w, _ = dt.isocalendar()
-    return f"{y}-W{w:02d}"
-
-
-# ==========================================================
-# Utils Sheets "find row by headers"
-# ==========================================================
-
-def _safe_str(x: Any) -> str:
-    return str(x).strip() if x is not None else ""
+    start, _ = challenge_week_window(now or now_fr())
+    return start.astimezone(PARIS_TZ).strftime("W%Y-%m-%d")  # ex: W2026-01-09
 
 def _safe_int(x: Any, default: int = 0) -> int:
     try:
@@ -59,371 +46,312 @@ def _safe_int(x: Any, default: int = 0) -> int:
     except Exception:
         return default
 
-def _normalize_code(code_vip: str) -> str:
-    return services.normalize_code(code_vip)
+def _safe_str(x: Any) -> str:
+    return str(x or "").strip()
 
-def find_row(
-    s: SheetsService,
-    table: str,
-    predicate,
-) -> Tuple[Optional[int], Optional[Dict[str, Any]]]:
+def _find_row_by_key(
+    rows: List[Dict[str, Any]],
+    *,
+    key_fields: List[str],
+    key_values: List[str],
+) -> Optional[Tuple[int, Dict[str, Any]]]:
     """
-    Retourne (row_index_sheet, row_dict) avec row_index_sheet en index Google Sheets (1=header).
+    rows vient de get_all_records -> index start=2 (ligne Sheets)
     """
-    rows = s.get_all_records(table)
     for idx, r in enumerate(rows, start=2):
-        try:
-            if predicate(r):
-                return idx, r
-        except Exception:
-            continue
-    return None, None
+        ok = True
+        for f, v in zip(key_fields, key_values):
+            if _safe_str(r.get(f)).lower() != _safe_str(v).lower():
+                ok = False
+                break
+        if ok:
+            return idx, r
+    return None
 
-def upsert_row_by_headers(
-    s: SheetsService,
-    table: str,
-    row_i: Optional[int],
-    data: Dict[str, Any],
-):
+def append_log(s: SheetsService, payload: Dict[str, Any]) -> None:
     """
-    Si row_i est None -> append.
-    Sinon -> update cellule par cellule via headers.
+    Log RP optionnel: si l’onglet existe + headers ok.
     """
-    if not row_i:
-        s.append_by_headers(table, data)
-        return
-    for k, v in data.items():
-        if k:
-            s.update_cell_by_header(table, row_i, k, v)
-
-
-# ==========================================================
-# Player profile
-# ==========================================================
-
-@dataclass
-class PlayerProfile:
-    code_vip: str
-    discord_id: str
-    avatar_tag: str
-    dollars: int
-    xp: int
-    level: int
-    ally_tag: str
-    ally_active_week: str  # week_key quand ally obtenu (pour limiter à 1/sem)
-    last_daily_day: str    # pour debug
-    created_at: str
-
-def profile_from_row(r: Dict[str, Any]) -> PlayerProfile:
-    return PlayerProfile(
-        code_vip=_normalize_code(_safe_str(r.get("code_vip"))),
-        discord_id=_safe_str(r.get("discord_id")),
-        avatar_tag=_safe_str(r.get("avatar_tag")).upper(),
-        dollars=_safe_int(r.get("dollars"), 0),
-        xp=_safe_int(r.get("xp"), 0),
-        level=_safe_int(r.get("level"), 1),
-        ally_tag=_safe_str(r.get("ally_tag")).upper(),
-        ally_active_week=_safe_str(r.get("ally_active_week")),
-        last_daily_day=_safe_str(r.get("last_daily_day")),
-        created_at=_safe_str(r.get("created_at")),
-    )
-
-def get_or_create_player(
-    s: SheetsService,
-    *,
-    code_vip: str,
-    discord_id: int,
-    default_avatar_tag: str,
-) -> Tuple[int, PlayerProfile, bool]:
-    """
-    Récupère ou crée le profil HUNT_PLAYERS.
-    returns (row_i, profile, created_bool)
-    """
-    code = _normalize_code(code_vip)
-    did = str(discord_id)
-
-    row_i, row = find_row(s, T_PLAYERS, lambda r: _normalize_code(_safe_str(r.get("code_vip"))) == code)
-    if row_i and row:
-        return row_i, profile_from_row(row), False
-
-    # Create
-    data = {
-        "code_vip": code,
-        "discord_id": did,
-        "avatar_tag": (default_avatar_tag or "").upper(),
-        "dollars": 0,
-        "xp": 0,
-        "level": 1,
-        "ally_tag": "",
-        "ally_active_week": "",
-        "last_daily_day": "",
-        "created_at": now_iso(),
-    }
-    s.append_by_headers(T_PLAYERS, data)
-
-    row_i2, row2 = find_row(s, T_PLAYERS, lambda r: _normalize_code(_safe_str(r.get("code_vip"))) == code)
-    if not row_i2 or not row2:
-        raise RuntimeError("Impossible de créer le profil HUNT_PLAYERS.")
-    return row_i2, profile_from_row(row2), True
-
-def update_player_fields(s: SheetsService, row_i: int, **fields):
-    clean = {}
-    for k, v in fields.items():
-        if v is None:
-            continue
-        clean[k] = v
-    if clean:
-        upsert_row_by_headers(s, T_PLAYERS, row_i, clean)
-
-
-# ==========================================================
-# Daily participation (anti double)
-# ==========================================================
-
-@dataclass
-class DailyState:
-    day_key: str
-    week_key: str
-    code_vip: str
-    discord_id: str
-    started_at: str
-    finished_at: str
-    state: str         # "STARTED" | "FINISHED"
-    correct: int       # utile si tu veux QCM plus tard
-    points_awarded: int
-    details: str
-
-def daily_from_row(r: Dict[str, Any]) -> DailyState:
-    return DailyState(
-        day_key=_safe_str(r.get("day_key")),
-        week_key=_safe_str(r.get("week_key")),
-        code_vip=_normalize_code(_safe_str(r.get("code_vip"))),
-        discord_id=_safe_str(r.get("discord_id")),
-        started_at=_safe_str(r.get("started_at")),
-        finished_at=_safe_str(r.get("finished_at")),
-        state=_safe_str(r.get("state")) or "STARTED",
-        correct=_safe_int(r.get("correct"), 0),
-        points_awarded=_safe_int(r.get("points_awarded"), 0),
-        details=_safe_str(r.get("details")),
-    )
-
-def get_daily_row(s: SheetsService, code_vip: str, day_key: str) -> Tuple[Optional[int], Optional[DailyState]]:
-    code = _normalize_code(code_vip)
-    row_i, row = find_row(
-        s, T_DAILY,
-        lambda r: _normalize_code(_safe_str(r.get("code_vip"))) == code and _safe_str(r.get("day_key")) == day_key
-    )
-    if row_i and row:
-        return row_i, daily_from_row(row)
-    return None, None
-
-def create_daily_started(
-    s: SheetsService,
-    *,
-    code_vip: str,
-    discord_id: int,
-    day_key: str,
-    week_key: str,
-    details: str = "",
-) -> DailyState:
-    data = {
-        "day_key": day_key,
-        "week_key": week_key,
-        "code_vip": _normalize_code(code_vip),
-        "discord_id": str(discord_id),
-        "started_at": now_iso(),
-        "finished_at": "",
-        "state": "STARTED",
-        "correct": 0,
-        "points_awarded": 0,
-        "details": details or "",
-    }
-    s.append_by_headers(T_DAILY, data)
-    _, st = get_daily_row(s, code_vip, day_key)
-    if not st:
-        raise RuntimeError("Impossible de créer la ligne HUNT_DAILY.")
-    return st
-
-def mark_daily_finished(
-    s: SheetsService,
-    row_i: int,
-    *,
-    correct: int = 0,
-    points_awarded: int = 0,
-    details: str = "",
-):
-    upsert_row_by_headers(s, T_DAILY, row_i, {
-        "finished_at": now_iso(),
-        "state": "FINISHED",
-        "correct": int(correct),
-        "points_awarded": int(points_awarded),
-        "details": details or "",
-    })
-
-
-# ==========================================================
-# Weekly scoreboard
-# ==========================================================
-
-@dataclass
-class WeeklyScore:
-    week_key: str
-    code_vip: str
-    discord_id: str
-    wins: int
-    points: int
-    updated_at: str
-
-def weekly_from_row(r: Dict[str, Any]) -> WeeklyScore:
-    return WeeklyScore(
-        week_key=_safe_str(r.get("week_key")),
-        code_vip=_normalize_code(_safe_str(r.get("code_vip"))),
-        discord_id=_safe_str(r.get("discord_id")),
-        wins=_safe_int(r.get("wins"), 0),
-        points=_safe_int(r.get("points"), 0),
-        updated_at=_safe_str(r.get("updated_at")),
-    )
-
-def get_weekly_row(s: SheetsService, code_vip: str, week_key: str) -> Tuple[Optional[int], Optional[WeeklyScore]]:
-    code = _normalize_code(code_vip)
-    row_i, row = find_row(
-        s, T_WEEKLY,
-        lambda r: _safe_str(r.get("week_key")) == week_key and _normalize_code(_safe_str(r.get("code_vip"))) == code
-    )
-    if row_i and row:
-        return row_i, weekly_from_row(row)
-    return None, None
-
-def bump_weekly_score(
-    s: SheetsService,
-    *,
-    code_vip: str,
-    discord_id: int,
-    week_key: str,
-    add_points: int = 0,
-    add_wins: int = 0,
-):
-    row_i, row = get_weekly_row(s, code_vip, week_key)
-    if not row_i or not row:
-        s.append_by_headers(T_WEEKLY, {
-            "week_key": week_key,
-            "code_vip": _normalize_code(code_vip),
-            "discord_id": str(discord_id),
-            "wins": int(add_wins),
-            "points": int(add_points),
-            "updated_at": now_iso(),
-        })
-        return
-
-    upsert_row_by_headers(s, T_WEEKLY, row_i, {
-        "wins": int(row.wins + add_wins),
-        "points": int(row.points + add_points),
-        "updated_at": now_iso(),
-    })
-
-
-# ==========================================================
-# Keys (staff claim + open)
-# ==========================================================
-
-@dataclass
-class KeyEntry:
-    week_key: str
-    code_vip: str
-    discord_id: str
-    key_type: str          # KEY_NORMAL | KEY_GOLD
-    claimed_at: str
-    claimed_by: str        # staff discord id
-    opened_at: str
-    loot_id: str
-    loot_name: str
-
-def key_from_row(r: Dict[str, Any]) -> KeyEntry:
-    return KeyEntry(
-        week_key=_safe_str(r.get("week_key")),
-        code_vip=_normalize_code(_safe_str(r.get("code_vip"))),
-        discord_id=_safe_str(r.get("discord_id")),
-        key_type=_safe_str(r.get("key_type")).upper(),
-        claimed_at=_safe_str(r.get("claimed_at")),
-        claimed_by=_safe_str(r.get("claimed_by")),
-        opened_at=_safe_str(r.get("opened_at")),
-        loot_id=_safe_str(r.get("loot_id")),
-        loot_name=_safe_str(r.get("loot_name")),
-    )
-
-def key_already_claimed_this_week(s: SheetsService, code_vip: str, week_key: str) -> bool:
-    code = _normalize_code(code_vip)
-    _, row = find_row(
-        s, T_KEYS,
-        lambda r: _safe_str(r.get("week_key")) == week_key and _normalize_code(_safe_str(r.get("code_vip"))) == code
-    )
-    return bool(row)
-
-def add_key_claim(
-    s: SheetsService,
-    *,
-    code_vip: str,
-    discord_id: int,
-    week_key: str,
-    key_type: str,
-    claimed_by_staff_id: int,
-):
-    s.append_by_headers(T_KEYS, {
-        "week_key": week_key,
-        "code_vip": _normalize_code(code_vip),
-        "discord_id": str(discord_id),
-        "key_type": (key_type or "").upper(),
-        "claimed_at": now_iso(),
-        "claimed_by": str(claimed_by_staff_id),
-        "opened_at": "",
-        "loot_id": "",
-        "loot_name": "",
-    })
-
-def list_unopened_keys(s: SheetsService, code_vip: str) -> List[Tuple[int, KeyEntry]]:
-    code = _normalize_code(code_vip)
-    out: List[Tuple[int, KeyEntry]] = []
-    rows = s.get_all_records(T_KEYS)
-    for idx, r in enumerate(rows, start=2):
-        if _normalize_code(_safe_str(r.get("code_vip"))) != code:
-            continue
-        opened = _safe_str(r.get("opened_at"))
-        if opened:
-            continue
-        out.append((idx, key_from_row(r)))
-    # plus ancien d'abord
-    out.sort(key=lambda x: x[1].claimed_at or "")
-    return out
-
-def mark_key_opened(s: SheetsService, row_i: int, loot_id: str, loot_name: str):
-    upsert_row_by_headers(s, T_KEYS, row_i, {
-        "opened_at": now_iso(),
-        "loot_id": loot_id,
-        "loot_name": loot_name,
-    })
-
-
-# ==========================================================
-# Optional log RP (pratique)
-# ==========================================================
-
-def append_hunt_log(
-    s: SheetsService,
-    *,
-    code_vip: str,
-    discord_id: int,
-    kind: str,
-    details: str,
-):
     try:
-        s.append_by_headers(T_LOG, {
-            "timestamp": now_iso(),
-            "code_vip": _normalize_code(code_vip),
-            "discord_id": str(discord_id),
-            "kind": (kind or "").upper(),
-            "details": details or "",
-        })
+        s.append_by_headers(T_LOG, payload)
     except Exception:
-        # Log = optionnel, jamais bloquant
+        # log non bloquant
         pass
 
+
+# ==========================================================
+# PLAYERS
+# Colonnes conseillées (si tu veux aligner tes headers):
+# discord_id | code_vip | pseudo | avatar_tag | level | xp | money
+# hp | max_hp | str | dex | int | cha | perception
+# ally_tag | ally_week | jail_until | created_at | last_seen
+# ==========================================================
+def ensure_player(
+    s: SheetsService,
+    *,
+    discord_id: int,
+    code_vip: str,
+    pseudo: str,
+    avatar_tag: str = "",
+) -> Tuple[int, Dict[str, Any]]:
+    code = normalize_code(code_vip)
+    did = str(discord_id)
+
+    rows = s.get_all_records(T_PLAYERS)
+    found = _find_row_by_key(rows, key_fields=["discord_id"], key_values=[did])
+    if found:
+        row_i, row = found
+        # update soft: last_seen + pseudo si vide
+        try:
+            s.update_cell_by_header(T_PLAYERS, row_i, "last_seen", now_iso())
+        except Exception:
+            pass
+        if not _safe_str(row.get("pseudo")) and pseudo:
+            try:
+                s.update_cell_by_header(T_PLAYERS, row_i, "pseudo", display_name(pseudo))
+            except Exception:
+                pass
+        if not _safe_str(row.get("code_vip")) and code:
+            try:
+                s.update_cell_by_header(T_PLAYERS, row_i, "code_vip", code)
+            except Exception:
+                pass
+        return row_i, row
+
+    # create minimal safe defaults
+    payload = {
+        "discord_id": did,
+        "code_vip": code,
+        "pseudo": display_name(pseudo),
+        "avatar_tag": _safe_str(avatar_tag),
+
+        "level": 1,
+        "xp": 0,
+        "money": 0,
+
+        "max_hp": 20,
+        "hp": 20,
+
+        "str": 1,
+        "dex": 1,
+        "int": 1,
+        "cha": 1,
+        "perception": 1,
+
+        "ally_tag": "",
+        "ally_week": "",
+        "jail_until": "",
+        "created_at": now_iso(),
+        "last_seen": now_iso(),
+    }
+    s.append_by_headers(T_PLAYERS, payload)
+
+    # relire
+    rows2 = s.get_all_records(T_PLAYERS)
+    found2 = _find_row_by_key(rows2, key_fields=["discord_id"], key_values=[did])
+    if not found2:
+        raise RuntimeError("Impossible de créer/récupérer le joueur HUNT_PLAYERS.")
+    return found2[0], found2[1]
+
+
+def get_player(s: SheetsService, discord_id: int) -> Optional[Tuple[int, Dict[str, Any]]]:
+    did = str(discord_id)
+    rows = s.get_all_records(T_PLAYERS)
+    return _find_row_by_key(rows, key_fields=["discord_id"], key_values=[did])
+
+
+def add_money(s: SheetsService, player_row_i: int, current_money: int, delta: int) -> int:
+    new_money = max(0, int(current_money) + int(delta))
+    s.update_cell_by_header(T_PLAYERS, player_row_i, "money", new_money)
+    return new_money
+
+def set_jail_until(s: SheetsService, player_row_i: int, until_iso: str) -> None:
+    s.update_cell_by_header(T_PLAYERS, player_row_i, "jail_until", until_iso)
+
+
+def is_in_jail(player: Dict[str, Any], now: Optional[datetime] = None) -> Tuple[bool, Optional[datetime]]:
+    now = (now or now_fr()).astimezone(PARIS_TZ)
+    raw = _safe_str(player.get("jail_until"))
+    if not raw:
+        return False, None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(PARIS_TZ)
+        if now < dt:
+            return True, dt
+        return False, None
+    except Exception:
+        return False, None
+
+
+# ==========================================================
+# DAILY (anti double participation)
+# Colonnes conseillées:
+# day_key | discord_id | code_vip | started_at | finished_at | seed | result | notes
+# ==========================================================
+def daily_already_started(s: SheetsService, discord_id: int, day_key: Optional[str] = None) -> bool:
+    dk = day_key or today_key_fr()
+    did = str(discord_id)
+    rows = s.get_all_records(T_DAILY)
+    return _find_row_by_key(rows, key_fields=["day_key", "discord_id"], key_values=[dk, did]) is not None
+
+def start_daily(s: SheetsService, *, discord_id: int, code_vip: str, seed: str = "") -> None:
+    """
+    On écrit une ligne dès le lancement pour bloquer le multi-try.
+    """
+    dk = today_key_fr()
+    did = str(discord_id)
+    if daily_already_started(s, discord_id, dk):
+        return
+
+    payload = {
+        "day_key": dk,
+        "discord_id": did,
+        "code_vip": normalize_code(code_vip),
+        "started_at": now_iso(),
+        "finished_at": "",
+        "seed": seed or "",
+        "result": "",
+        "notes": "",
+    }
+    s.append_by_headers(T_DAILY, payload)
+
+def finish_daily(s: SheetsService, *, discord_id: int, day_key: Optional[str] = None, result: str = "", notes: str = "") -> None:
+    dk = day_key or today_key_fr()
+    did = str(discord_id)
+    rows = s.get_all_records(T_DAILY)
+    found = _find_row_by_key(rows, key_fields=["day_key", "discord_id"], key_values=[dk, did])
+    if not found:
+        return
+    row_i, _ = found
+    try:
+        s.update_cell_by_header(T_DAILY, row_i, "finished_at", now_iso())
+    except Exception:
+        pass
+    if result:
+        try:
+            s.update_cell_by_header(T_DAILY, row_i, "result", result[:200])
+        except Exception:
+            pass
+    if notes:
+        try:
+            s.update_cell_by_header(T_DAILY, row_i, "notes", notes[:500])
+        except Exception:
+            pass
+
+
+# ==========================================================
+# WEEKLY (score hebdo)
+# Colonnes conseillées:
+# week_key | discord_id | code_vip | pseudo | score | wins | last_played
+# ==========================================================
+def add_weekly_score(
+    s: SheetsService,
+    *,
+    discord_id: int,
+    code_vip: str,
+    pseudo: str,
+    delta_score: int,
+) -> int:
+    wk = week_key_fr()
+    did = str(discord_id)
+    code = normalize_code(code_vip)
+    rows = s.get_all_records(T_WEEKLY)
+    found = _find_row_by_key(rows, key_fields=["week_key", "discord_id"], key_values=[wk, did])
+
+    if not found:
+        payload = {
+            "week_key": wk,
+            "discord_id": did,
+            "code_vip": code,
+            "pseudo": display_name(pseudo),
+            "score": int(delta_score),
+            "wins": 0,
+            "last_played": now_iso(),
+        }
+        s.append_by_headers(T_WEEKLY, payload)
+        return int(delta_score)
+
+    row_i, row = found
+    cur = _safe_int(row.get("score"), 0)
+    newv = max(0, cur + int(delta_score))
+    s.update_cell_by_header(T_WEEKLY, row_i, "score", newv)
+    try:
+        s.update_cell_by_header(T_WEEKLY, row_i, "last_played", now_iso())
+    except Exception:
+        pass
+    return newv
+
+
+# ==========================================================
+# KEYS (staff claim)
+# Colonnes conseillées:
+# week_key | code_vip | discord_id | tier | claimed_at | claimed_by | opened_at | reward
+# ==========================================================
+def key_already_claimed_this_week(s: SheetsService, code_vip: str) -> bool:
+    wk = week_key_fr()
+    code = normalize_code(code_vip)
+    rows = s.get_all_records(T_KEYS)
+    return _find_row_by_key(rows, key_fields=["week_key", "code_vip"], key_values=[wk, code]) is not None
+
+def claim_key(
+    s: SheetsService,
+    *,
+    code_vip: str,
+    discord_id: int,
+    tier: str,          # "NORMAL" | "GOLD"
+    staff_id: int,
+) -> Tuple[bool, str]:
+    wk = week_key_fr()
+    code = normalize_code(code_vip)
+    t = (tier or "NORMAL").strip().upper()
+    if t not in ("NORMAL", "GOLD"):
+        t = "NORMAL"
+
+    if key_already_claimed_this_week(s, code):
+        return False, f"Clé déjà claim cette semaine pour `{code}`."
+
+    payload = {
+        "week_key": wk,
+        "code_vip": code,
+        "discord_id": str(discord_id),
+        "tier": t,
+        "claimed_at": now_iso(),
+        "claimed_by": str(staff_id),
+        "opened_at": "",
+        "reward": "",
+    }
+    s.append_by_headers(T_KEYS, payload)
+
+    append_log(s, {
+        "timestamp": now_iso(),
+        "event": "KEY_CLAIM",
+        "code_vip": code,
+        "discord_id": str(discord_id),
+        "staff_id": str(staff_id),
+        "details": f"tier={t} week={wk}",
+    })
+
+    return True, f"✅ Clé `{t}` claim pour `{code}` (week {wk})."
+
+
+# ==========================================================
+# Mini RNG utilitaire (pour daily)
+# ==========================================================
+def roll_d20() -> int:
+    return random.randint(1, 20)
+
+def roll_range(a: int, b: int) -> int:
+    return random.randint(a, b)
+
+def weighted_choice(items: List[Tuple[str, int]]) -> str:
+    """
+    items = [(value, weight), ...]
+    """
+    total = sum(w for _, w in items)
+    r = random.randint(1, max(1, total))
+    acc = 0
+    for val, w in items:
+        acc += w
+        if r <= acc:
+            return val
+    return items[-1][0] if items else ""
