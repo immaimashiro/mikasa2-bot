@@ -17,6 +17,7 @@ from services import SheetsService, S3Service, catify, display_name, normalize_c
 import services
 import domain
 import ui
+import hunt_services
 
 # ----------------------------
 # ENV + creds file
@@ -59,6 +60,8 @@ vip_group = app_commands.Group(name="vip", description="Commandes VIP (staff)")
 defi_group = app_commands.Group(name="defi", description="Commandes défis (HG)")
 cave_group = app_commands.Group(name="cave", description="Cave Mikasa (HG)")
 qcm_group = app_commands.Group(name="qcm", description="QCM quotidien Los Santos (VIP)")
+hunt_group = app_commands.Group(name="hunt", description="Chasse au trésor (RPG)")
+bot.tree.add_command(hunt_group)
 bot.tree.add_command(qcm_group)
 bot.tree.add_command(vip_group)
 bot.tree.add_command(defi_group)
@@ -1546,6 +1549,153 @@ async def qcm_top(interaction: discord.Interaction):
     )
     e.set_footer(text="Tri: bonnes réponses, puis temps moyen. 🐾")
     await interaction.followup.send(embed=e, ephemeral=True)
+
+# ----------------------------
+# /hunt daily (public)
+# ----------------------------
+@safe_group_command(hunt_group, name="daily", description="Lancer ta quête journalière (RPG).")
+async def hunt_daily(interaction: discord.Interaction):
+    await defer_ephemeral(interaction)
+
+    # 0) doit être sur serveur + member
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return await interaction.followup.send("❌ À utiliser sur le serveur.", ephemeral=True)
+
+    # 1) doit être VIP lié
+    row_i, vip = domain.find_vip_row_by_discord_id(sheets, interaction.user.id)
+    if not row_i or not vip:
+        return await interaction.followup.send("😾 Ton Discord n’est pas lié à un VIP. Demande au staff.", ephemeral=True)
+
+    code = normalize_code(str(vip.get("code_vip", "")))
+    pseudo = display_name(vip.get("pseudo", code))
+
+    # 2) ensure player + prison check
+    p_row_i, player = hunt_services.ensure_player(
+        sheets,
+        discord_id=interaction.user.id,
+        code_vip=code,
+        pseudo=pseudo,
+        avatar_tag="",  # tu le rempliras plus tard via UI (/hunt profile)
+    )
+
+    in_jail, until = hunt_services.is_in_jail(player)
+    if in_jail and until:
+        return await interaction.followup.send(
+            f"🚓 Tu es en prison jusqu’à **{until.strftime('%d/%m %H:%M')}** (FR). Reviens plus tard.",
+            ephemeral=True
+        )
+
+    # 3) anti double daily
+    if hunt_services.daily_already_started(sheets, interaction.user.id):
+        return await interaction.followup.send("😾 Daily déjà lancé aujourd’hui. Reviens demain.", ephemeral=True)
+
+    # 4) on verrouille immédiatement (anti relance)
+    seed = f"{interaction.user.id}:{hunt_services.today_key_fr()}"
+    hunt_services.start_daily(sheets, discord_id=interaction.user.id, code_vip=code, seed=seed)
+
+    # 5) pour l’instant: mini résultat RNG (on fera la vraie UI multi-tours dans hunt_ui.py)
+    d20 = hunt_services.roll_d20()
+
+    # argent aléatoire “pas trop dur/pas trop easy”
+    base = hunt_services.roll_range(12, 25)      # garantie
+    bonus = max(0, d20 - 10) * hunt_services.roll_range(1, 3)
+    gain = base + bonus
+
+    cur_money = int(player.get("money", 0) or 0)
+    new_money = hunt_services.add_money(sheets, p_row_i, cur_money, gain)
+
+    # score hebdo (petit)
+    hunt_services.add_weekly_score(
+        sheets,
+        discord_id=interaction.user.id,
+        code_vip=code,
+        pseudo=pseudo,
+        delta_score=1
+    )
+
+    # chance “vol” -> prison possible
+    # (tu as demandé: voler + risque prison max 12h)
+    stole = (d20 >= 15)
+    got_caught = stole and (hunt_services.roll_d20() <= 8)
+
+    notes = f"d20={d20} gain=${gain}"
+    result = "GAIN"
+
+    extra = ""
+    if stole:
+        extra += "\n🕵️ Tu as tenté un petit larcin…"
+        if got_caught:
+            hours = hunt_services.roll_range(2, 12)
+            jail_until = (services.now_fr() + timedelta(hours=hours)).astimezone(services.PARIS_TZ)
+            hunt_services.set_jail_until(sheets, p_row_i, jail_until.isoformat())
+            result = "JAIL"
+            extra += f"\n🚓 Raté. Prison **{hours}h**."
+        else:
+            steal_gain = hunt_services.roll_range(20, 60)
+            new_money = hunt_services.add_money(sheets, p_row_i, new_money, steal_gain)
+            extra += f"\n💰 Réussi. +${steal_gain}."
+
+    # 6) on termine daily (pour l’instant on “finish” direct)
+    hunt_services.finish_daily(sheets, discord_id=interaction.user.id, result=result, notes=notes)
+
+    # 7) message
+    msg = (
+        f"🧭 **HUNT • Daily**\n"
+        f"👤 **{pseudo}** (`{code}`)\n"
+        f"🎲 Jet: **{d20}**\n"
+        f"💵 Gain: **+${gain}**\n"
+        f"🏦 Total: **${new_money}**"
+        f"{extra}\n\n"
+        f"🐾 Mikasa referme le carnet… *tap tap*"
+    )
+    await interaction.followup.send(msg, ephemeral=True)
+
+
+# ----------------------------
+# /hunt key claim (HG / direction)
+# ----------------------------
+@safe_group_command(hunt_group, name="key", description="Gestion des clés Hunt (HG).")
+@hg_check()
+async def hunt_key_group(interaction: discord.Interaction):
+    # placeholder: Discord exige une commande “parent” si tu veux une sous-branche /hunt key claim.
+    await interaction.response.send_message("Utilise une sous-commande: `/hunt key claim`.", ephemeral=True)
+
+
+@safe_group_command(hunt_key_group, name="claim", description="Donner une clé Hunt à un VIP (HG).")
+@hg_check()
+@app_commands.describe(code_vip="SUB-XXXX-XXXX", tier="NORMAL ou GOLD", discord_id="Optionnel si tu veux forcer l'id")
+async def hunt_key_claim(interaction: discord.Interaction, code_vip: str, tier: str = "NORMAL", discord_id: str = ""):
+    await defer_ephemeral(interaction)
+
+    code = normalize_code(code_vip)
+
+    # on récupère le discord_id depuis VIP sheet si pas fourni
+    did = (discord_id or "").strip()
+    if not did:
+        row_i, vip = domain.find_vip_row_by_code(sheets, code)
+        if not row_i or not vip:
+            return await interaction.followup.send("❌ VIP introuvable.", ephemeral=True)
+        did = str(vip.get("discord_id", "")).strip()
+        if not did:
+            return await interaction.followup.send("❌ Ce VIP n’a pas de discord_id lié.", ephemeral=True)
+
+    try:
+        did_int = int(did)
+    except Exception:
+        return await interaction.followup.send("❌ discord_id invalide.", ephemeral=True)
+
+    ok, msg = hunt_services.claim_key(
+        sheets,
+        code_vip=code,
+        discord_id=did_int,
+        tier=tier,
+        staff_id=interaction.user.id
+    )
+    if not ok:
+        return await interaction.followup.send(f"😾 {msg}", ephemeral=True)
+
+    await interaction.followup.send(msg, ephemeral=True)
+
 
 # ----------------------------
 # Ready + sync + scheduler
