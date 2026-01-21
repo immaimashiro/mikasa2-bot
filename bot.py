@@ -18,6 +18,7 @@ import services
 import domain
 import ui
 import hunt_services
+import hunt_ui
 
 # ----------------------------
 # ENV + creds file
@@ -1648,7 +1649,29 @@ async def hunt_daily(interaction: discord.Interaction):
         f"{extra}\n\n"
         f"🐾 Mikasa referme le carnet… *tap tap*"
     )
-    await interaction.followup.send(msg, ephemeral=True)
+   # récupérer l'éventuel state existant (reprise)
+    dk = hunt_services.today_key_fr()
+    rows = sheets.get_all_records(hunt_services.T_DAILY)
+    existing_notes = ""
+    for r in rows:
+        if str(r.get("day_key","")).strip() == dk and str(r.get("discord_id","")).strip() == str(interaction.user.id):
+            existing_notes = str(r.get("notes","") or "").strip()
+            break
+
+    emb, view, st = hunt_ui.build_daily_view(
+        services=sheets,
+        author_id=interaction.user.id,
+        code_vip=code,
+        pseudo=pseudo,
+        employee_boost=is_employee(interaction.user),  # ou ta logique staff/employé
+        existing_state_json=existing_notes,
+    )
+
+    # Sauvegarde immédiate (anti “retour en arrière”)
+    hunt_ui.save_state_to_daily(sheets, discord_id=interaction.user.id, state=st, result="RUNNING")
+
+    await interaction.followup.send(embed=emb, view=view, ephemeral=True)
+
 
 
 # ----------------------------
