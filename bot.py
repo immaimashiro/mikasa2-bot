@@ -58,7 +58,8 @@ scheduler = AsyncIOScheduler(timezone=services.PARIS_TZ)
 vip_group = app_commands.Group(name="vip", description="Commandes VIP (staff)")
 defi_group = app_commands.Group(name="defi", description="Commandes défis (HG)")
 cave_group = app_commands.Group(name="cave", description="Cave Mikasa (HG)")
-
+qcm_group = app_commands.Group(name="qcm", description="QCM quotidien Los Santos (VIP)")
+bot.tree.add_command(qcm_group)
 bot.tree.add_command(vip_group)
 bot.tree.add_command(defi_group)
 bot.tree.add_command(cave_group)
@@ -1259,6 +1260,113 @@ async def vipstats(interaction: discord.Interaction):
     emb.set_footer(text="Mikasa fait tourner Excel dans sa tête. 🐾")
 
     await interaction.followup.send(embed=emb, ephemeral=True)
+
+# QCM
+
+#@safe_tree_command(name="qcm", description="QCM quotidien Los Santos (VIP).")
+#async def qcm(interaction: discord.Interaction):
+#    await defer_ephemeral(interaction)
+
+#    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+#        return await interaction.followup.send("❌ À utiliser sur le serveur.", ephemeral=True)
+
+    # récup VIP lié
+ #   row_i, vip = domain.find_vip_row_by_discord_id(sheets, interaction.user.id)
+ #   if not row_i or not vip:
+        #return await interaction.followup.send("😾 Ton Discord n’est pas lié à un VIP. Demande au staff.", ephemeral=True)
+
+ #   code = domain.normalize_code(str(vip.get("code_vip", "")))
+ #   pseudo = domain.display_name(vip.get("pseudo", code))
+
+ #   view = ui.QcmDailyView(
+ #       services=sheets,
+   #     discord_id=interaction.user.id,
+ #       code_vip=code,
+ #       vip_pseudo=pseudo,
+ #       chrono_limit_sec=12,  # tu peux régler
+ #   )
+
+  #  await interaction.followup.send(embed=view.build_embed(), view=view, ephemeral=True)
+
+@safe_group_command(qcm_group, name="award", description="Distribuer les bonus QCM de la semaine (HG).")
+@hg_check()
+async def qcm_award(interaction: discord.Interaction):
+    await defer_ephemeral(interaction)
+    wk, awarded = domain.qcm_award_weekly_bonuses(sheets)
+    if not awarded:
+        return await interaction.followup.send(f"🐾 Aucun bonus attribué pour {wk}.", ephemeral=True)
+
+    lines = [f"🏆 Bonus QCM {wk}:"]
+    for did, pts, good in awarded:
+        lines.append(f"• <@{did}>: **+{pts} pts** (bonnes réponses: {good})")
+
+    await interaction.followup.send("\n".join(lines), ephemeral=True)
+
+@safe_group_command(qcm_group, name="start", description="Lancer le QCM du jour (VIP).")
+async def qcm_start(interaction: discord.Interaction):
+    await defer_ephemeral(interaction)
+
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return await interaction.followup.send("❌ À utiliser sur le serveur.", ephemeral=True)
+
+    row_i, vip = domain.find_vip_row_by_discord_id(sheets, interaction.user.id)
+    if not row_i or not vip:
+        return await interaction.followup.send("😾 Ton Discord n’est pas lié à un VIP. Demande au staff.", ephemeral=True)
+
+    code = domain.normalize_code(str(vip.get("code_vip", "")))
+    pseudo = domain.display_name(vip.get("pseudo", code))
+
+    view = ui.QcmDailyView(
+        services=sheets,
+        discord_id=interaction.user.id,
+        code_vip=code,
+        vip_pseudo=pseudo,
+        chrono_limit_sec=16,
+    )
+    await interaction.followup.send(embed=view.build_embed(), view=view, ephemeral=True)
+
+
+@safe_group_command(qcm_group, name="rules", description="Règles du QCM (VIP).")
+async def qcm_rules(interaction: discord.Interaction):
+    await defer_ephemeral(interaction)
+
+    e = discord.Embed(
+        title="📜 Règles du QCM Los Santos",
+        description=(
+            "• **5 questions / jour**\n"
+            "• **+2 points** par bonne réponse\n"
+            "• **Cap hebdo QCM: 70 points max**\n"
+            "• **1 participation / jour** (progression sauvegardée à chaque réponse)\n"
+            "• **Pas de retour arrière**: une réponse = verrouillée\n"
+            "• ⏱️ **Chrono: 16 secondes**\n"
+            "  - Si tu réponds **après 16s**, ta réponse est enregistrée mais **0 point**\n"
+        ),
+        color=discord.Color.blurple()
+    )
+    e.set_footer(text="Objectif: fun + équité. Mikasa surveille le sablier. 🐾")
+    await interaction.followup.send(embed=e, ephemeral=True)
+
+
+@safe_group_command(qcm_group, name="top", description="Classement QCM de la semaine (VIP).")
+async def qcm_top(interaction: discord.Interaction):
+    await defer_ephemeral(interaction)
+
+    wk, ordered = domain.qcm_weekly_leaderboard(sheets)
+    if not ordered:
+        return await interaction.followup.send("🐾 Pas encore de réponses cette semaine.", ephemeral=True)
+
+    lines = []
+    for i, (did, st) in enumerate(ordered[:10], start=1):
+        avg = int(st["elapsed"] / max(1, st["total"]))
+        lines.append(f"**{i}.** <@{did}> — ✅ **{st['good']}** bonnes / {st['total']} • ⏱️ ~{avg}s")
+
+    e = discord.Embed(
+        title=f"🏆 Classement QCM • {wk}",
+        description="\n".join(lines),
+        color=discord.Color.gold()
+    )
+    e.set_footer(text="Tri: bonnes réponses, puis temps moyen. 🐾")
+    await interaction.followup.send(embed=e, ephemeral=True)
 
 # ----------------------------
 # Ready + sync + scheduler
