@@ -1323,7 +1323,13 @@ async def qcm_start(interaction: discord.Interaction):
         vip_pseudo=pseudo,
         chrono_limit_sec=16,
     )
-    await interaction.followup.send(embed=view.build_embed(), view=view, ephemeral=True)
+    msg = await interaction.followup.send(embed=view.build_embed(), view=view, ephemeral=True)
+    try:
+    # msg peut être None selon versions; si besoin, on ignore
+        if msg:
+            asyncio.create_task(view.start_tick_15s(msg))
+    except Exception:
+        pass
 
 
 @safe_group_command(qcm_group, name="rules", description="Règles du QCM (VIP).")
