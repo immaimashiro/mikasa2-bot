@@ -192,7 +192,11 @@ class HuntDailyView(ui.View):
         self.btn_potion = HuntPotionButton()
         self.btn_flee = HuntFleeButton()
         self.btn_continue = HuntContinueButton()
-
+        self.btn_steal = HuntStealButton()
+        self.btn_finish = HuntFinishNpcButton()
+        
+        self.add_item(self.btn_steal)
+        self.add_item(self.btn_finish)
         self.add_item(self.btn_attack)
         self.add_item(self.btn_defend)
         self.add_item(self.btn_potion)
@@ -241,6 +245,14 @@ class HuntDailyView(ui.View):
             self.btn_defend.disabled = True
             self.btn_potion.disabled = True
             self.btn_flee.disabled = True
+
+        elif phase == "COMBAT":
+            self.btn_steal.disabled = False
+            self.btn_finish.disabled = False
+        else:
+            self.btn_steal.disabled = True
+            self.btn_finish.disabled = True
+
 
     def build_embed(self) -> discord.Embed:
         pseudo = self.state.get("pseudo", "Quelqu’un")
@@ -620,6 +632,77 @@ class HuntFleeButton(ui.Button):
         save_state_to_daily(view.s, discord_id=interaction.user.id, state=view.state, result="RUNNING")
         await view.refresh(interaction)
 
+class HuntStealButton(ui.Button):
+    def __init__(self):
+        super().__init__(label="🧤 Voler", style=discord.ButtonStyle.secondary)
+
+    async def callback(self, interaction: discord.Interaction):
+        view: HuntDailyView = self.view  # type: ignore
+
+        d = _d20()
+        # succès si >= 12
+        if d >= 12:
+            gain = _roll(12, 35)
+            view.state["player"]["money_gain"] = int(view.state["player"].get("money_gain", 0)) + gain
+            state_add_log(view.state, f"🧤 Vol réussi (jet {d}) → **+${gain}**.")
+            # petite montée de heat quand même
+            heat = hunt_services.add_heat(view.s, interaction.user.id, amount=3)
+        else:
+            state_add_log(view.state, f"🚨 Vol raté (jet {d})… sirènes au loin.")
+            # prison pour vol raté
+            got = hunt_services.ensure_player(view.s, interaction.user.id)
+            _, row = got
+            heat = _safe_int(row.get("heat", 0), 0)
+            hours = hunt_services.compute_sentence_hours("STEAL", heat=heat, roll=d)
+            until = hunt_services.set_jail(view.s, interaction.user.id, hours=hours, reason="Vol raté pendant /hunt daily")
+            # heat augmente plus
+            hunt_services.add_heat(view.s, interaction.user.id, amount=8)
+            view.state["phase"] = "RESOLVE"
+            state_add_log(view.state, f"⛓️ Arrêté. Prison jusqu’à **{until.astimezone(PARIS_TZ).strftime('%d/%m %H:%M')}**.")
+            save_state_to_daily(view.s, discord_id=interaction.user.id, state=view.state, result="JAIL(STEAL)")
+            return await view.refresh(interaction)
+
+        view.state["turn"] = int(view.state.get("turn", 1)) + 1
+        save_state_to_daily(view.s, discord_id=interaction.user.id, state=view.state, result="RUNNING")
+        await view.refresh(interaction)
+
+
+class HuntFinishNpcButton(ui.Button):
+    def __init__(self):
+        super().__init__(label="☠️ Achever (PNJ)", style=discord.ButtonStyle.danger)
+
+    async def callback(self, interaction: discord.Interaction):
+        view: HuntDailyView = self.view  # type: ignore
+
+        d = _d20()
+        state_add_log(view.state, f"☠️ Tentative d’achever un PNJ… jet **{d}**.")
+
+        # Réussite narrative si d>=10: tu “tues”
+        if d >= 10:
+            state_add_log(view.state, "🩸 Le geste est irréversible.")
+            # prison pour meurtre très probable
+            got = hunt_services.ensure_player(view.s, interaction.user.id)
+            _, row = got
+            heat = _safe_int(row.get("heat", 0), 0)
+            hours = hunt_services.compute_sentence_hours("KILL", heat=heat, roll=d)
+            until = hunt_services.set_jail(view.s, interaction.user.id, hours=hours, reason="Meurtre PNJ pendant /hunt daily")
+            hunt_services.add_heat(view.s, interaction.user.id, amount=18)
+
+            # petit butin “sale”
+            gain = _roll(20, 60)
+            view.state["player"]["money_gain"] = int(view.state["player"].get("money_gain", 0)) + gain
+            state_add_log(view.state, f"💵 Tu récupères **${gain}**… mais la ville a vu. Prison jusqu’à **{until.astimezone(PARIS_TZ).strftime('%d/%m %H:%M')}**.")
+            view.state["phase"] = "RESOLVE"
+            save_state_to_daily(view.s, discord_id=interaction.user.id, state=view.state, result="JAIL(KILL)")
+            return await view.refresh(interaction)
+
+        # échec: tu n’arrives pas à le faire (ton 50/50 “je ne peux pas l’achever”)
+        state_add_log(view.state, "😶 Finalement… tu n’y arrives pas. Mikasa te regarde sans juger.")
+        hunt_services.add_heat(view.s, interaction.user.id, amount=5)
+
+        view.state["turn"] = int(view.state.get("turn", 1)) + 1
+        save_state_to_daily(view.s, discord_id=interaction.user.id, state=view.state, result="RUNNING")
+        await view.refresh(interaction)
 
 # ==========================================================
 # Fonction utilitaire appelée par bot.py
