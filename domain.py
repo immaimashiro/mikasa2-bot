@@ -4,7 +4,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from services import (
     SheetsService, S3Service,
@@ -633,3 +633,260 @@ def sales_summary(
     # tri: plus gros delta points
     ordered = sorted(stats.items(), key=lambda kv: kv[1]["delta"], reverse=True)
     return start, end, ordered, total
+
+# QCM
+
+# ---- QCM helpers ----
+
+QCM_DAILY_QUESTIONS = 5
+QCM_POINTS_PER_GOOD = 2
+QCM_WEEKLY_CAP = 70
+
+def date_key_fr(dt=None) -> str:
+    dt = dt or now_fr()
+    return dt.astimezone(dt.tzinfo).strftime("%Y-%m-%d")
+
+def week_key_fr(dt=None) -> str:
+    dt = dt or now_fr()
+    iso = dt.isocalendar()
+    return f"{iso.year}-W{iso.week:02d}"
+
+def qcm_get_questions(s):
+    # attend QCM_QUESTIONS
+    rows = s.get_all_records("QCM_QUESTIONS")
+    out = []
+    for r in rows:
+        qid = str(r.get("qid","")).strip()
+        if not qid:
+            continue
+        out.append({
+            "qid": qid,
+            "question": str(r.get("question","")).strip(),
+            "A": str(r.get("a","")).strip(),
+            "B": str(r.get("b","")).strip(),
+            "C": str(r.get("c","")).strip(),
+            "D": str(r.get("d","")).strip(),
+            "correct": str(r.get("correct","")).strip().upper(),
+            "difficulty": str(r.get("difficulty","")).strip().upper(),
+        })
+    return out
+
+def qcm_pick_daily_set(s, dt=None):
+    """
+    Choix déterministe: tout le monde a les mêmes questions du jour.
+    """
+    dt = dt or now_fr()
+    dk = date_key_fr(dt)
+    pool = qcm_get_questions(s)
+    if len(pool) < QCM_DAILY_QUESTIONS:
+        raise RuntimeError("Pas assez de questions dans QCM_QUESTIONS.")
+    import random
+    rnd = random.Random(dk)  # seed stable
+    rnd.shuffle(pool)
+    return pool[:QCM_DAILY_QUESTIONS]
+
+def qcm_today_progress(s, code_vip: str, discord_id: int, dt=None):
+    dt = dt or now_fr()
+    dk = date_key_fr(dt)
+    code = normalize_code(code_vip)
+    rows = s.get_all_records("QCM_LOG")
+    answers = []
+    for r in rows:
+        if str(r.get("date_key","")).strip() != dk:
+            continue
+        if normalize_code(str(r.get("code_vip",""))) != code:
+            continue
+        if str(r.get("discord_id","")).strip() != str(discord_id):
+            continue
+        try:
+            qi = int(r.get("q_index", 0) or 0)
+        except Exception:
+            qi = 0
+        answers.append((qi, r))
+    answers.sort(key=lambda x: x[0])
+    return dk, answers  # answers length = nb questions répondues
+
+def qcm_week_points_awarded(s, code_vip: str, dt=None) -> int:
+    dt = dt or now_fr()
+    wk = week_key_fr(dt)
+    code = normalize_code(code_vip)
+    total = 0
+    for r in s.get_all_records("QCM_LOG"):
+        if str(r.get("week_key","")).strip() != wk:
+            continue
+        if normalize_code(str(r.get("code_vip",""))) != code:
+            continue
+        try:
+            total += int(r.get("points_awarded", 0) or 0)
+        except Exception:
+            pass
+    return total
+
+def qcm_log_answer(
+    s,
+    *,
+    discord_id: int,
+    code_vip: str,
+    qid: str,
+    q_index: int,
+    choice: str,
+    is_correct: bool,
+    points_awarded: int,
+    elapsed_sec: int,
+    meta: str = "",
+):
+    dt = now_fr()
+    s.append_by_headers("QCM_LOG", {
+        "timestamp": dt.isoformat(timespec="seconds"),
+        "date_key": date_key_fr(dt),
+        "week_key": week_key_fr(dt),
+        "discord_id": str(discord_id),
+        "code_vip": normalize_code(code_vip),
+        "qid": str(qid),
+        "q_index": int(q_index),
+        "choice": str(choice),
+        "is_correct": 1 if is_correct else 0,
+        "points_awarded": int(points_awarded),
+        "elapsed_sec": int(elapsed_sec),
+        "locked": 1,
+        "meta": (meta or "").strip(),
+    })
+
+def qcm_submit_answer(
+    s,
+    *,
+    discord_id: int,
+    code_vip: str,
+    q: dict,
+    q_index: int,
+    choice: str,
+    elapsed_sec: int,
+    chrono_limit_sec: int,
+):
+    """
+    Retourne: (ok, msg, points_awarded, is_correct)
+    """
+    # Anti double-submit: si déjà répondu à ce q_index aujourd'hui -> refuse
+    dk, answers = qcm_today_progress(s, code_vip, discord_id)
+    already = {qi for (qi, _) in answers}
+    if q_index in already:
+        return False, "Déjà répondu à cette question.", 0, False
+
+    correct = (choice.upper() == str(q.get("correct","")).upper())
+    week_pts = qcm_week_points_awarded(s, code_vip)
+    cap_left = max(0, QCM_WEEKLY_CAP - week_pts)
+
+    # chrono: si trop lent -> 0 point (mais log quand même)
+    late = elapsed_sec > int(chrono_limit_sec)
+
+    pts = 0
+    meta = ""
+    if late:
+        pts = 0
+        meta = f"late>{chrono_limit_sec}s"
+    else:
+        if correct and cap_left >= QCM_POINTS_PER_GOOD:
+            pts = QCM_POINTS_PER_GOOD
+        elif correct and cap_left < QCM_POINTS_PER_GOOD:
+            pts = 0
+            meta = "weekly_cap"
+        else:
+            pts = 0
+
+    qcm_log_answer(
+        s,
+        discord_id=discord_id,
+        code_vip=code_vip,
+        qid=q["qid"],
+        q_index=q_index,
+        choice=choice.upper(),
+        is_correct=correct,
+        points_awarded=pts,
+        elapsed_sec=elapsed_sec,
+        meta=meta
+    )
+
+    # On crédite des points VIP via action (si >0)
+    if pts > 0:
+        # 1 bonne réponse = +2 (défini dans ACTIONS)
+        # On utilise add_points_by_action avec qty=1 mais points_unite=2
+        add_points_by_action(
+            s,
+            code_vip,
+            "QCM_BONNE_REPONSE",
+            1,
+            staff_id=discord_id,  # log staff_id = discord id du VIP (ok)
+            reason=f"QCM {date_key_fr()} q{q_index} {q['qid']}",
+            author_is_hg=True
+        )
+
+    return True, ("✅" if correct else "❌"), pts, correct
+
+def qcm_weekly_leaderboard(s, dt=None):
+    dt = dt or now_fr()
+    wk = week_key_fr(dt)
+    rows = s.get_all_records("QCM_LOG")
+
+    # discord_id -> {good, total, elapsed_sum}
+    m = {}
+    for r in rows:
+        if str(r.get("week_key","")).strip() != wk:
+            continue
+        did = str(r.get("discord_id","")).strip()
+        if not did:
+            continue
+        try:
+            is_ok = int(r.get("is_correct",0) or 0) == 1
+        except Exception:
+            is_ok = False
+        try:
+            el = int(r.get("elapsed_sec",0) or 0)
+        except Exception:
+            el = 0
+
+        if did not in m:
+            m[did] = {"good": 0, "total": 0, "elapsed": 0}
+        m[did]["total"] += 1
+        m[did]["elapsed"] += el
+        if is_ok:
+            m[did]["good"] += 1
+
+    # tri: plus de bonnes réponses, puis temps moyen plus faible
+    def avg(kv):
+        did, st = kv
+        return (st["elapsed"] / max(1, st["total"]))
+
+    ordered = sorted(
+        m.items(),
+        key=lambda kv: (kv[1]["good"], -kv[1]["total"], -1/ max(0.0001, (kv[1]["elapsed"]/max(1,kv[1]["total"])))),
+        reverse=True
+    )
+    # tri ci-dessus est “ok”, mais on peut faire plus clair:
+    ordered = sorted(m.items(), key=lambda kv: (-kv[1]["good"], (kv[1]["elapsed"]/max(1,kv[1]["total"]))))
+    return wk, ordered
+
+def qcm_award_weekly_bonuses(s):
+    wk, ordered = qcm_weekly_leaderboard(s)
+    # top 3
+    bonuses = [("QCM_BONUS_W1", 20), ("QCM_BONUS_W2", 15), ("QCM_BONUS_W3", 10)]
+    awarded = []
+    for i, (did, st) in enumerate(ordered[:3]):
+        # retrouve code_vip via VIP table
+        row_i, vip = find_vip_row_by_discord_id(s, int(did))
+        if not vip:
+            continue
+        code = normalize_code(str(vip.get("code_vip","")))
+        add_points_by_action(s, code, bonuses[i][0], 1, staff_id=0, reason=f"Bonus QCM {wk}", author_is_hg=True)
+        awarded.append((did, bonuses[i][1], st["good"]))
+
+    # participation: >=15 bonnes réponses dans la semaine
+    for did, st in ordered:
+        if st["good"] >= 15:
+            row_i, vip = find_vip_row_by_discord_id(s, int(did))
+            if not vip:
+                continue
+            code = normalize_code(str(vip.get("code_vip","")))
+            add_points_by_action(s, code, "QCM_PARTICIPANT", 1, staff_id=0, reason=f"Participation QCM {wk}", author_is_hg=True)
+
+    return wk, awarded
+
