@@ -1056,6 +1056,25 @@ class QcmDailyView(discord.ui.View):
 
         self._add_buttons()
 
+    def build_qcm_embed(q):
+        lines = []
+        for i, txt in enumerate(q["choices"]):
+            lines.append(f"**{LETTERS[i]}.** {txt}")
+
+            embed = discord.Embed(
+            title="🧠 QCM Los Santos",
+            description=(
+                f"⏱️ Temps restant: **16 secondes**\n\n"
+                f"**{q['question']}**\n\n"
+                + "\n".join(lines)
+            ),
+            color=discord.Color.gold()
+        )
+
+        embed.set_footer(text="Une seule tentative. Pas de retour en arrière. 🐾")
+        return embed
+
+
     def _add_buttons(self):
         self.clear_items()
         if self.current_index >= len(self.questions):
@@ -1116,6 +1135,9 @@ class QcmDailyView(discord.ui.View):
         except Exception:
             pass
 
+    def is_correct(answer_letter: str, q):
+        return answer_letter.upper() == q["correct_letter"]
+
     async def submit(self, interaction: discord.Interaction, choice: str):
         # calc elapsed
         elapsed = int((now_fr() - self.sent_at).total_seconds())
@@ -1165,6 +1187,23 @@ class QcmAnswerButton(discord.ui.Button):
         await interaction.response.edit_message(embed=view.build_embed(), view=view)
         # puis submit
         await view.submit(interaction, self.choice)
+
+class QcmSession:
+    def __init__(self):
+        self.correct_pos_counts = [0, 0, 0, 0]  # A,B,C,D
+
+def shuffle_balanced(row, session: QcmSession, max_same=2):
+    for _ in range(8):
+        q = build_shuffled_question_from_sheet(row)
+        idx = LETTERS.index(q["correct_letter"])
+        if session.correct_pos_counts[idx] < max_same:
+            session.correct_pos_counts[idx] += 1
+            return q
+
+    # fallback si on n'a pas trouvé mieux
+    q = build_shuffled_question_from_sheet(row)
+    session.correct_pos_counts[LETTERS.index(q["correct_letter"])] += 1
+    return q
 
 
 class QcmCloseButton(discord.ui.Button):
