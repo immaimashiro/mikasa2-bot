@@ -44,6 +44,16 @@ WEEKLY_CHALLENGES: Dict[int, List[str]] = {
     ],
 }
 
+QCM_DAILY_QUESTIONS = 5
+QCM_POINTS_PER_GOOD = 2
+QCM_WEEKLY_CAP = 70
+QCM_CHRONO_SEC = 16
+
+# quotas pour les 4 questions après la Q1 fixe
+QCM_DAILY_QUOTA = {"EASY": 2, "MED": 1, "HARD": 1}
+
+QCM_FIXED_QID = "LS_QUARTET_0001"
+
 # ----------------------------
 # VIP Queries
 # ----------------------------
@@ -672,18 +682,38 @@ def qcm_get_questions(s):
     return out
 
 def qcm_pick_daily_set(s, dt=None):
-    """
-    Choix déterministe: tout le monde a les mêmes questions du jour.
-    """
     dt = dt or now_fr()
     dk = date_key_fr(dt)
+
     pool = qcm_get_questions(s)
-    if len(pool) < QCM_DAILY_QUESTIONS:
-        raise RuntimeError("Pas assez de questions dans QCM_QUESTIONS.")
+    by_id = {q["qid"]: q for q in pool}
+
+    if QCM_FIXED_QID not in by_id:
+        raise RuntimeError(f"Question fixe manquante: {QCM_FIXED_QID}")
+
+    fixed = by_id[QCM_FIXED_QID]
+
+    # pool sans la question fixe
+    rest = [q for q in pool if q["qid"] != QCM_FIXED_QID]
+
+    # stratification par difficulté
+    easy = [q for q in rest if q.get("difficulty") == "EASY"]
+    med  = [q for q in rest if q.get("difficulty") == "MED"]
+    hard = [q for q in rest if q.get("difficulty") == "HARD"]
+
     import random
     rnd = random.Random(dk)  # seed stable
-    rnd.shuffle(pool)
-    return pool[:QCM_DAILY_QUESTIONS]
+    rnd.shuffle(easy); rnd.shuffle(med); rnd.shuffle(hard)
+
+    picked = []
+    picked += easy[:QCM_DAILY_QUOTA["EASY"]]
+    picked += med[:QCM_DAILY_QUOTA["MED"]]
+    picked += hard[:QCM_DAILY_QUOTA["HARD"]]
+
+    if len(picked) != 4:
+        raise RuntimeError("Pas assez de questions par difficulté pour respecter les quotas.")
+
+    return [fixed] + picked
 
 def qcm_today_progress(s, code_vip: str, discord_id: int, dt=None):
     dt = dt or now_fr()
