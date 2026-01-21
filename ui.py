@@ -1034,3 +1034,129 @@ class VipPickSelect(ui.Select):
             embed=edit_view.build_embed(),
             view=edit_view
         )
+
+# QCM
+
+class QcmDailyView(discord.ui.View):
+    def __init__(self, *, services, discord_id: int, code_vip: str, vip_pseudo: str, chrono_limit_sec: int = 12):
+        super().__init__(timeout=6 * 60)
+        self.s = services
+        self.discord_id = discord_id
+        self.code_vip = domain.normalize_code(code_vip)
+        self.vip_pseudo = domain.display_name(vip_pseudo or self.code_vip)
+
+        self.chrono_limit_sec = int(chrono_limit_sec)
+
+        self.questions = domain.qcm_pick_daily_set(self.s)
+        self.date_key, self.answers = domain.qcm_today_progress(self.s, self.code_vip, self.discord_id)
+
+        self.current_index = len(self.answers)  # 0..4
+        self.sent_at = now_fr()
+
+        self._add_buttons()
+
+    def _add_buttons(self):
+        self.clear_items()
+        if self.current_index >= len(self.questions):
+            self.add_item(QcmCloseButton())
+            return
+
+        for opt in ["A", "B", "C", "D"]:
+            self.add_item(QcmAnswerButton(opt))
+
+        self.add_item(QcmCloseButton())
+
+    def build_embed(self) -> discord.Embed:
+        done = self.current_index
+        total = len(self.questions)
+
+        if done >= total:
+            e = discord.Embed(
+                title="✅ QCM terminé (aujourd’hui)",
+                description=f"Tu as répondu aux **{total}/5** questions.\nReviens demain pour le prochain QCM. 🐾",
+                color=discord.Color.green()
+            )
+            return e
+
+        q = self.questions[self.current_index]
+        e = discord.Embed(
+            title=f"🧠 QCM Los Santos du {self.date_key}",
+            description=(
+                f"👤 **{self.vip_pseudo}**\n"
+                f"📌 Question **{done+1}/{total}**\n"
+                f"⏱️ Chrono: **{self.chrono_limit_sec}s**\n\n"
+                f"**{q['question']}**\n\n"
+                f"**A)** {q['A']}\n"
+                f"**B)** {q['B']}\n"
+                f"**C)** {q['C']}\n"
+                f"**D)** {q['D']}\n"
+            ),
+            color=discord.Color.blurple()
+        )
+        e.set_footer(text="Chaque réponse est enregistrée immédiatement. Aucun retour arrière.")
+        return e
+
+    async def refresh(self, interaction: discord.Interaction):
+        self._add_buttons()
+        self.sent_at = now_fr()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def submit(self, interaction: discord.Interaction, choice: str):
+        # calc elapsed
+        elapsed = int((now_fr() - self.sent_at).total_seconds())
+
+        q = self.questions[self.current_index]
+        ok, mark, pts, is_correct = domain.qcm_submit_answer(
+            self.s,
+            discord_id=self.discord_id,
+            code_vip=self.code_vip,
+            q=q,
+            q_index=self.current_index + 1,
+            choice=choice,
+            elapsed_sec=elapsed,
+            chrono_limit_sec=self.chrono_limit_sec
+        )
+        if not ok:
+            return await interaction.response.send_message(f"😾 {mark}", ephemeral=True)
+
+        # feedback court
+        note = f"{mark} Réponse enregistrée."
+        if elapsed > self.chrono_limit_sec:
+            note += " ⏱️ Trop lent: **0 point**."
+        elif is_correct and pts > 0:
+            note += f" ✅ **+{pts} pts**"
+        elif is_correct and pts == 0:
+            note += " ✅ Correct mais **cap hebdo** atteint (0 point)."
+        else:
+            note += " 0 point."
+
+        # avancer
+        self.current_index += 1
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        await interaction.followup.send(note, ephemeral=True)
+
+
+class QcmAnswerButton(discord.ui.Button):
+    def __init__(self, choice: str):
+        super().__init__(label=choice, style=discord.ButtonStyle.secondary)
+        self.choice = choice
+
+    async def callback(self, interaction: discord.Interaction):
+        view: QcmDailyView = self.view  # type: ignore
+        # verrouille instantanément côté UI
+        for item in view.children:
+            if isinstance(item, discord.ui.Button):
+                item.disabled = True
+        await interaction.response.edit_message(embed=view.build_embed(), view=view)
+        # puis submit
+        await view.submit(interaction, self.choice)
+
+
+class QcmCloseButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="✅ Fermer", style=discord.ButtonStyle.success)
+
+    async def callback(self, interaction: discord.Interaction):
+        for item in self.view.children:
+            item.disabled = True
+        await interaction.response.edit_message(content="✅ QCM fermé.", embed=None, view=self.view)
