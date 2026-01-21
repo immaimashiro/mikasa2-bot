@@ -10,6 +10,7 @@ from discord import ui
 import domain
 from services import catify, now_fr, now_iso
 
+import asyncio
 
 # ---------------------------------------
 # Catégories (si tu veux aussi les exposer depuis ui)
@@ -1077,7 +1078,7 @@ class QcmDailyView(discord.ui.View):
                 color=discord.Color.green()
             )
             return e
-
+        remaining = self.chrono_limit_sec  # affichage statique au moment de l'envoi (puis tick 15s)
         q = self.questions[self.current_index]
         e = discord.Embed(
             title=f"🧠 QCM Los Santos du {self.date_key}",
@@ -1093,6 +1094,7 @@ class QcmDailyView(discord.ui.View):
             ),
             color=discord.Color.blurple()
         )
+        e.add_field(name="⏱️ Temps", value=f"**{remaining}s** (réponse après = 0 point)", inline=False)
         e.set_footer(text="Chaque réponse est enregistrée immédiatement. Aucun retour arrière.")
         return e
 
@@ -1100,6 +1102,19 @@ class QcmDailyView(discord.ui.View):
         self._add_buttons()
         self.sent_at = now_fr()
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def start_tick_15s(self, message: discord.Message):
+        # Juste un clin d’œil visuel: on passe de 16s -> 15s
+        # (évite d'édit toutes les secondes)
+        try:
+            await asyncio.sleep(1)
+            # si déjà répondu / terminé, on ne fait rien
+            if self.current_index >= len(self.questions):
+                return
+            self.sent_at = self.sent_at  # on ne touche pas au vrai chrono
+            await message.edit(embed=self.build_embed(), view=self)
+        except Exception:
+            pass
 
     async def submit(self, interaction: discord.Interaction, choice: str):
         # calc elapsed
