@@ -106,5 +106,144 @@ COMMON_ENEMIES = [
 
 RARE_ENEMIES = [
     "Gangster sous stéroïdes",
-    "Chass
+    "Chasseur nocturne",
+    "Maniaque au regard vide",
+]
 
+ICONIC_CAMEOS = [
+    "Trevor (caméo)",
+    "Michael (caméo)",
+]
+
+# Baylife / RP perso
+BAYLIFE_NPCS = [
+    "Shakir",
+    "Luxus Dreyar",
+    "Dodo Lasaumure",
+]
+
+# ==========================================================
+# BOSS: ATTENIN
+# ==========================================================
+
+ATTENIN_TAUNTS = [
+    "« Regarde-toi… même la rue a pitié de toi. »",
+    "« Tu veux être un héros? Tu n’es même pas un figurant. »",
+    "« Tu trembles. Je le vois. »",
+    "« Continue. J’adore quand tu t’illusionnes. »",
+]
+
+ATTENIN_FLEE_LINE_1 = "Attenin recule, essuie une goutte de sang, puis disparaît dans l’ombre."
+ATTENIN_FLEE_LINE_2 = "Attenin ricane, et au moment où tu frappes… elle n’est déjà plus là."
+
+ATTENIN_SAVE_LINE = "« Le SubUrban sera toujours de ton côté. »"
+
+# Combat 3: si victoire et le joueur veut tuer -> jet 50/50
+ATTENIN_EXEC_FAIL = "Tes mains tremblent. « Finalement… je ne peux pas l’achever… » Attenin s’échappe, blessée mais vivante."
+ATTENIN_EXEC_SUCCESS = "Le dernier coup part. Attenin s’effondre. Le silence dure une seconde. Mikasa laisse échapper un petit *prrr*."
+
+# ==========================================================
+# ÉCONOMIE / ITEMS / CLÉS
+# ==========================================================
+
+KEY_NORMAL = "KEY_NORMAL"
+KEY_GOLD = "KEY_GOLD"
+
+RARITY_COMMON = "COMMON"
+RARITY_RARE = "RARE"
+RARITY_EPIC = "EPIC"
+RARITY_LEGENDARY = "LEGENDARY"
+
+@dataclass
+class LootItem:
+    item_id: str
+    name: str
+    rarity: str
+    price_dollars: int
+    expires_days: int = 0  # 0 = ne périme pas
+    desc: str = ""
+
+# Exemples (tu pourras en ajouter ensuite, mais c’est une base solide)
+LOOT_POOL: List[LootItem] = [
+    LootItem("BANDAGE", "Bandages", RARITY_COMMON, price_dollars=120, desc="Soigne un peu. Simple, efficace."),
+    LootItem("MEDKIT", "Kit de soin", RARITY_RARE, price_dollars=420, desc="Soigne beaucoup. Tu respires mieux."),
+    LootItem("KNIFE", "Couteau", RARITY_RARE, price_dollars=550, expires_days=7, desc="Lame rapide. 7 jours d’usage."),
+    LootItem("PISTOL", "Pistolet", RARITY_EPIC, price_dollars=1800, expires_days=7, desc="Bim. 7 jours d’usage."),
+    LootItem("LUCILLE", "Lucille", RARITY_LEGENDARY, price_dollars=9999, expires_days=7,
+             desc="Arme légendaire, très chère. Une batte entourée de barbelés. 7 jours d’usage."),
+]
+
+def _weighted_choice(items: List[Tuple[str, int]]) -> str:
+    total = sum(w for _, w in items)
+    r = random.randint(1, max(1, total))
+    upto = 0
+    for v, w in items:
+        upto += w
+        if r <= upto:
+            return v
+    return items[-1][0]
+
+def roll_key_rarity(key_type: str) -> str:
+    """
+    Clé or = meilleures chances.
+    """
+    key_type = (key_type or "").upper()
+    if key_type == KEY_GOLD:
+        # Gold: + légendaire
+        return _weighted_choice([
+            (RARITY_COMMON, 30),
+            (RARITY_RARE, 35),
+            (RARITY_EPIC, 25),
+            (RARITY_LEGENDARY, 10),
+        ])
+    # Normal
+    return _weighted_choice([
+        (RARITY_COMMON, 55),
+        (RARITY_RARE, 30),
+        (RARITY_EPIC, 13),
+        (RARITY_LEGENDARY, 2),
+    ])
+
+def roll_loot_from_rarity(rarity: str) -> LootItem:
+    pool = [x for x in LOOT_POOL if x.rarity == rarity]
+    if not pool:
+        pool = [x for x in LOOT_POOL if x.rarity == RARITY_COMMON] or LOOT_POOL[:]
+    return random.choice(pool)
+
+# ==========================================================
+# JETS JOURNALIERS (proposition)
+# ==========================================================
+
+DAILY_ROLL_TYPES = [
+    ("COMBAT", "⚔️ Jet Combat"),
+    ("EXPLO", "🧭 Jet Exploration"),
+    ("SURVIE", "🩹 Jet Survie"),
+    ("CHANCE", "🍀 Jet Chance"),
+    ("DIRECTION", "✨ Jet de la Direction"),
+]
+
+def build_daily_roll_menu(is_employee: bool) -> List[str]:
+    """
+    Retourne une liste de types de jets proposés aujourd'hui.
+    Si employé: 50% chance d'inclure le Jet Direction.
+    (On ne donne pas "mieux" à 100%, on donne "plus souvent".)
+    """
+    base = ["COMBAT", "EXPLO", "SURVIE", "CHANCE"]
+
+    # On prend 3 jets au hasard dans les 4 de base
+    picks = random.sample(base, k=3)
+
+    if is_employee and random.random() < 0.50:
+        # remplace un jet par direction, ou ajoute si tu préfères
+        # ici: on ajoute pour que l’employé ait une option bonus
+        picks.append("DIRECTION")
+
+    return picks
+
+def roll_direction_bonus_event() -> bool:
+    """
+    Bonus interne pour le Jet de la Direction:
+    ex: chance de rencontrer un allié, loot amélioré, etc.
+    Tu ajusteras dans hunt_domain.py.
+    """
+    return random.random() < 0.50
