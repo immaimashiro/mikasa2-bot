@@ -1389,6 +1389,44 @@ async def vipstats(interaction: discord.Interaction):
 
   #  await interaction.followup.send(embed=view.build_embed(), view=view, ephemeral=True)
 
+import random
+
+LETTERS = ["A", "B", "C", "D"]
+
+def build_shuffled_question(q: dict, *, rng: random.Random | None = None):
+    rng = rng or random.Random()
+
+    choices = list(q["choices"])
+    rng.shuffle(choices)
+
+    correct_text = q["correct"]
+    if correct_text not in choices:
+        raise ValueError(f"Correct answer not found in choices for {q.get('id')}")
+
+    correct_index = choices.index(correct_text)
+    correct_letter = LETTERS[correct_index]
+
+    return {
+        "id": q.get("id"),
+        "difficulty": q.get("difficulty"),
+        "question": q["question"],
+        "choices": choices,              # mélangées
+        "correct_letter": correct_letter, # A/B/C/D calculé
+        "correct_text": correct_text,
+    }
+
+def shuffle_with_balance(q, counts, max_same=2, tries=6):
+    for _ in range(tries):
+        built = build_shuffled_question(q)
+        idx = LETTERS.index(built["correct_letter"])
+        if counts[idx] < max_same:
+            counts[idx] += 1
+            return built
+    # si on n'a pas réussi, on prend quand même (sinon boucle infinie)
+    built = build_shuffled_question(q)
+    counts[LETTERS.index(built["correct_letter"])] += 1
+    return built
+
 @safe_group_command(qcm_group, name="award", description="Distribuer les bonus QCM de la semaine (HG).")
 @hg_check()
 async def qcm_award(interaction: discord.Interaction):
