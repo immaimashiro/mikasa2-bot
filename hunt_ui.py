@@ -1,1 +1,655 @@
+# hunt_ui.py
+# -*- coding: utf-8 -*-
+
+from __future__ import annotations
+
+import json
+import random
+from dataclasses import dataclass
+from typing import Any, Dict, Optional, Tuple, List
+
+import discord
+from discord import ui
+
+import hunt_services
+from services import now_iso, now_fr, PARIS_TZ, display_name
+
+
+# ==========================================================
+# Mini "moteur" de rencontre
+# - Simple mais extensible
+# - Sauvegarde après CHAQUE action
+# ==========================================================
+ENEMIES = [
+    {"id": "rat", "name": "Rat mutant", "hp": 10, "atk": (1, 4), "gold": (8, 18)},
+    {"id": "coyote", "name": "Coyote famélique", "hp": 14, "atk": (2, 6), "gold": (10, 25)},
+    {"id": "gang", "name": "Voyou de ruelle", "hp": 16, "atk": (2, 7), "gold": (12, 30)},
+    {"id": "hound", "name": "Chien errant nerveux", "hp": 12, "atk": (2, 5), "gold": (10, 22)},
+]
+
+ALLY_TAGS = ["MAI", "ROXY", "LYA", "JACKO", "DRACO"]
+
+
+def _roll(a: int, b: int) -> int:
+    return random.randint(a, b)
+
+def _d20() -> int:
+    return hunt_services.roll_d20()
+
+def _clamp(x: int, lo: int, hi: int) -> int:
+    return max(lo, min(hi, x))
+
+def _safe_int(x: Any, default: int = 0) -> int:
+    try:
+        return int(x)
+    except Exception:
+        return default
+
+def _now_fr_str() -> str:
+    return now_fr().astimezone(PARIS_TZ).strftime("%d/%m %H:%M")
+
+
+# ==========================================================
+# State sérialisé en JSON dans HUNT_DAILY.notes
+# ==========================================================
+def make_initial_state(
+    *,
+    code_vip: str,
+    pseudo: str,
+    employee_boost: bool,
+    forced_enemy_id: Optional[str] = None
+) -> Dict[str, Any]:
+    enemy = None
+    if forced_enemy_id:
+        enemy = next((e for e in ENEMIES if e["id"] == forced_enemy_id), None)
+    if not enemy:
+        enemy = random.choice(ENEMIES)
+
+    state = {
+        "v": 1,
+        "phase": "INTRO",  # INTRO -> COMBAT -> RESOLVE -> DONE
+        "code_vip": code_vip,
+        "pseudo": pseudo,
+
+        "turn": 1,
+        "log": [],
+
+        "player": {
+            "hp": 20,
+            "max_hp": 20,
+            "shield": 0,       # petit bouclier temporaire
+            "potions": 1,      # bandage/potion simple
+            "money_gain": 0,   # gain accumulé sur la run
+        },
+
+        "ally": {
+            "active": False,
+            "tag": "",
+            "hp": 0,
+            "max_hp": 0,
+            "used_this_week": False,
+        },
+
+        "enemy": {
+            "id": enemy["id"],
+            "name": enemy["name"],
+            "hp": int(enemy["hp"]),
+            "max_hp": int(enemy["hp"]),
+        },
+
+        "flags": {
+            "employee_boost": bool(employee_boost),
+            "can_spawn_ally": True,
+        }
+    }
+    return state
+
+
+def state_add_log(state: Dict[str, Any], line: str) -> None:
+    state.setdefault("log", [])
+    state["log"].append(line)
+    # limite la taille pour Sheets
+    if len(state["log"]) > 30:
+        state["log"] = state["log"][-30:]
+
+
+def dump_state(state: Dict[str, Any]) -> str:
+    return json.dumps(state, ensure_ascii=False)
+
+def load_state(raw: str) -> Optional[Dict[str, Any]]:
+    if not raw:
+        return None
+    raw = raw.strip()
+    # si quelqu’un a mis autre chose qu’un JSON, on ignore
+    if not (raw.startswith("{") and raw.endswith("}")):
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+# ==========================================================
+# Sauvegarde dans HUNT_DAILY
+# ==========================================================
+def save_state_to_daily(
+    s,
+    *,
+    discord_id: int,
+    state: Dict[str, Any],
+    result: str = "",
+) -> None:
+    """
+    On met le JSON dans HUNT_DAILY.notes, et optionnellement HUNT_DAILY.result
+    """
+    dk = hunt_services.today_key_fr()
+    did = str(discord_id)
+
+    rows = s.get_all_records(hunt_services.T_DAILY)
+    found = None
+    for idx, r in enumerate(rows, start=2):
+        if str(r.get("day_key", "")).strip() == dk and str(r.get("discord_id", "")).strip() == did:
+            found = (idx, r)
+            break
+    if not found:
+        return
+
+    row_i, _ = found
+    try:
+        s.update_cell_by_header(hunt_services.T_DAILY, row_i, "notes", dump_state(state))
+    except Exception:
+        pass
+    if result:
+        try:
+            s.update_cell_by_header(hunt_services.T_DAILY, row_i, "result", result[:200])
+        except Exception:
+            pass
+
+
+# ==========================================================
+# UI
+# ==========================================================
+class HuntDailyView(ui.View):
+    """
+    - Pas de chrono de décision
+    - Sauvegarde après chaque action
+    - Tour par tour
+    """
+    def __init__(
+        self,
+        *,
+        services,
+        author_id: int,
+        state: Dict[str, Any],
+    ):
+        super().__init__(timeout=30 * 60)  # limite technique Discord (pas un chrono de choix)
+        self.s = services
+        self.author_id = author_id
+        self.state = state
+
+        self.btn_attack = HuntAttackButton()
+        self.btn_defend = HuntDefendButton()
+        self.btn_potion = HuntPotionButton()
+        self.btn_flee = HuntFleeButton()
+        self.btn_continue = HuntContinueButton()
+
+        self.add_item(self.btn_attack)
+        self.add_item(self.btn_defend)
+        self.add_item(self.btn_potion)
+        self.add_item(self.btn_flee)
+        self.add_item(self.btn_continue)
+
+        self._sync_buttons()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("😾 Pas touche. Lance ton propre `/hunt daily`.", ephemeral=True)
+            return False
+        return True
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
+
+    def _sync_buttons(self) -> None:
+        phase = self.state.get("phase", "INTRO")
+        done = (phase == "DONE")
+
+        # Le bouton continue sert à passer INTRO -> COMBAT ou RESOLVE -> DONE
+        self.btn_continue.disabled = done
+
+        if phase in ("INTRO",):
+            self.btn_attack.disabled = True
+            self.btn_defend.disabled = True
+            self.btn_potion.disabled = True
+            self.btn_flee.disabled = True
+
+        elif phase in ("COMBAT",):
+            self.btn_attack.disabled = False
+            self.btn_defend.disabled = False
+            self.btn_potion.disabled = False
+            self.btn_flee.disabled = False
+
+        elif phase in ("RESOLVE",):
+            self.btn_attack.disabled = True
+            self.btn_defend.disabled = True
+            self.btn_potion.disabled = True
+            self.btn_flee.disabled = True
+
+        elif done:
+            self.btn_attack.disabled = True
+            self.btn_defend.disabled = True
+            self.btn_potion.disabled = True
+            self.btn_flee.disabled = True
+
+    def build_embed(self) -> discord.Embed:
+        pseudo = self.state.get("pseudo", "Quelqu’un")
+        code = self.state.get("code_vip", "SUB-????-????")
+
+        p = self.state["player"]
+        e = self.state["enemy"]
+        ally = self.state.get("ally", {})
+
+        phase = self.state.get("phase", "INTRO")
+        turn = int(self.state.get("turn", 1))
+
+        title = "🧭 HUNT • Daily RPG"
+        if phase == "INTRO":
+            title = "🧭 HUNT • Rencontre"
+        elif phase == "COMBAT":
+            title = "⚔️ HUNT • Combat"
+        elif phase == "RESOLVE":
+            title = "🎁 HUNT • Résultat"
+        elif phase == "DONE":
+            title = "✅ HUNT • Terminé"
+
+        desc = (
+            f"👤 **{display_name(pseudo)}** (`{code}`)\n"
+            f"🕰️ {_now_fr_str()} (FR)\n"
+        )
+
+        emb = discord.Embed(title=title, description=desc, color=discord.Color.dark_purple())
+
+        # Barres HP simples
+        emb.add_field(
+            name="🧍 Joueur",
+            value=(
+                f"❤️ **{p['hp']} / {p['max_hp']}**\n"
+                f"🛡️ Bouclier: **{p.get('shield', 0)}**\n"
+                f"🩹 Bandages: **{p.get('potions', 0)}**\n"
+                f"💵 Gain run: **${p.get('money_gain', 0)}**"
+            ),
+            inline=True
+        )
+
+        ally_line = "—"
+        if ally and ally.get("active"):
+            ally_line = f"🤝 **[{ally.get('tag','?')}]** ❤️ {ally.get('hp',0)}/{ally.get('max_hp',0)}"
+
+        emb.add_field(
+            name="🧑‍🤝‍🧑 Allié",
+            value=ally_line,
+            inline=True
+        )
+
+        emb.add_field(
+            name=f"👹 Ennemi (Tour {turn})",
+            value=f"**{e['name']}**\n❤️ **{e['hp']} / {e['max_hp']}**",
+            inline=False
+        )
+
+        # Log narratif
+        logs = self.state.get("log", [])
+        if not logs:
+            logs = ["Mikasa entrouvre un vieux carnet… quelque chose bouge dans l’ombre."]
+        emb.add_field(name="📜 Récit", value="\n".join(logs[-10:]), inline=False)
+
+        emb.set_footer(text="Pas de chrono: prends ton temps. Les boutons expirent seulement si Discord coupe la view.")
+        return emb
+
+    async def refresh(self, interaction: discord.Interaction) -> None:
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    # ---------------------------
+    # Mécaniques
+    # ---------------------------
+    def maybe_spawn_ally(self) -> None:
+        """
+        50% pour employés de rencontrer un membre de la direction pour aider (1 max / semaine),
+        sinon plus rare pour les autres.
+        Note: On ne met pas ici le 'pas le même que l’avatar' pour l’instant, ça viendra
+        quand on ajoutera la sélection de personnage.
+        """
+        if self.state["ally"]["active"]:
+            return
+        if not self.state["flags"].get("can_spawn_ally", True):
+            return
+
+        employee = bool(self.state["flags"].get("employee_boost"))
+        chance = 50 if employee else 18
+        if _roll(1, 100) > chance:
+            return
+
+        tag = random.choice(ALLY_TAGS)
+        self.state["ally"] = {
+            "active": True,
+            "tag": tag,
+            "hp": 12,
+            "max_hp": 12,
+            "used_this_week": True,
+        }
+        self.state["flags"]["can_spawn_ally"] = False
+        state_add_log(self.state, f"✨ Mikasa hérisse ses poils… un allié surgit: **[{tag}]**!")
+
+    def enemy_attack(self) -> int:
+        enemy_id = self.state["enemy"]["id"]
+        base = next((x for x in ENEMIES if x["id"] == enemy_id), None)
+        if not base:
+            dmg = _roll(1, 4)
+        else:
+            dmg = _roll(base["atk"][0], base["atk"][1])
+
+        # bouclier absorbe d’abord
+        shield = int(self.state["player"].get("shield", 0))
+        if shield > 0:
+            absorbed = min(shield, dmg)
+            shield -= absorbed
+            dmg -= absorbed
+            self.state["player"]["shield"] = shield
+            if absorbed > 0:
+                state_add_log(self.state, f"🛡️ Ton bouclier absorbe **{absorbed}** dégâts.")
+
+        # si allié actif, 25% chance qu’il prenne le coup à ta place
+        ally = self.state.get("ally", {})
+        if ally and ally.get("active") and _roll(1, 100) <= 25:
+            ally["hp"] = max(0, int(ally["hp"]) - max(1, dmg))
+            state_add_log(self.state, f"🤝 **[{ally.get('tag','?')}]** encaisse le coup: **-{dmg} HP**.")
+            if ally["hp"] <= 0:
+                ally["active"] = False
+                state_add_log(self.state, f"💥 L’allié disparaît dans la fumée… (KO)")
+            self.state["ally"] = ally
+            return 0
+
+        # sinon sur joueur
+        self.state["player"]["hp"] = max(0, int(self.state["player"]["hp"]) - max(1, dmg))
+        return dmg
+
+    def check_end(self) -> Optional[str]:
+        """
+        Retourne "WIN" / "LOSE" / None
+        """
+        if int(self.state["enemy"]["hp"]) <= 0:
+            return "WIN"
+        if int(self.state["player"]["hp"]) <= 0:
+            return "LOSE"
+        return None
+
+    def apply_win_rewards(self) -> None:
+        enemy_id = self.state["enemy"]["id"]
+        base = next((x for x in ENEMIES if x["id"] == enemy_id), None)
+        gold = _roll(10, 25) if not base else _roll(base["gold"][0], base["gold"][1])
+
+        # petit bonus d20 “héroïque”
+        d = _d20()
+        bonus = max(0, d - 12) * _roll(1, 3)
+
+        gain = gold + bonus
+        self.state["player"]["money_gain"] = int(self.state["player"].get("money_gain", 0)) + gain
+        state_add_log(self.state, f"🎁 Butin trouvé: **+${gain}** (jet {d}).")
+
+    def apply_death_penalty(self) -> Dict[str, Any]:
+        """
+        Mort = perte partielle:
+        - perte 25% du gain run
+        - chance de perdre 1 bandage
+        - prison 10% chance (1 à 4h) “ramassé par les flics”
+        """
+        p = self.state["player"]
+        lost = int(p.get("money_gain", 0)) // 4
+        p["money_gain"] = max(0, int(p.get("money_gain", 0)) - lost)
+
+        if int(p.get("potions", 0)) > 0 and _roll(1, 100) <= 35:
+            p["potions"] = int(p.get("potions", 0)) - 1
+            state_add_log(self.state, "🩹 Dans la panique… tu as perdu **1 bandage**.")
+
+        jail_hours = 0
+        if _roll(1, 100) <= 10:
+            jail_hours = _roll(1, 4)
+
+        return {"lost_money": lost, "jail_hours": jail_hours}
+
+
+# ==========================================================
+# Buttons
+# ==========================================================
+class HuntContinueButton(ui.Button):
+    def __init__(self):
+        super().__init__(label="➡️ Continuer", style=discord.ButtonStyle.primary)
+
+    async def callback(self, interaction: discord.Interaction):
+        view: HuntDailyView = self.view  # type: ignore
+        phase = view.state.get("phase", "INTRO")
+
+        if phase == "INTRO":
+            # spawn ally possible au début
+            view.maybe_spawn_ally()
+            state_add_log(view.state, "⚔️ L’ennemi s’approche. Choisis ton action.")
+            view.state["phase"] = "COMBAT"
+            save_state_to_daily(view.s, discord_id=interaction.user.id, state=view.state, result="RUNNING")
+            return await view.refresh(interaction)
+
+        if phase == "RESOLVE":
+            # terminer la daily
+            view.state["phase"] = "DONE"
+            save_state_to_daily(view.s, discord_id=interaction.user.id, state=view.state, result="DONE")
+            # marque finished_at
+            try:
+                hunt_services.finish_daily(view.s, discord_id=interaction.user.id, result="DONE", notes=dump_state(view.state))
+            except Exception:
+                pass
+            view._sync_buttons()
+            return await view.refresh(interaction)
+
+        # DONE ou COMBAT: rien
+        await view.refresh(interaction)
+
+
+class HuntAttackButton(ui.Button):
+    def __init__(self):
+        super().__init__(label="🗡️ Attaquer", style=discord.ButtonStyle.danger)
+
+    async def callback(self, interaction: discord.Interaction):
+        view: HuntDailyView = self.view  # type: ignore
+
+        # tour joueur
+        d = _d20()
+        dmg = 0
+        if d >= 18:
+            dmg = _roll(6, 10)
+            state_add_log(view.state, f"💥 Critique! Jet **{d}** → **-{dmg} HP** à l’ennemi.")
+        elif d >= 11:
+            dmg = _roll(3, 7)
+            state_add_log(view.state, f"🗡️ Touché. Jet **{d}** → **-{dmg} HP**.")
+        else:
+            state_add_log(view.state, f"😬 Raté. Jet **{d}**. L’ennemi esquive.")
+
+        view.state["enemy"]["hp"] = max(0, int(view.state["enemy"]["hp"]) - dmg)
+
+        end = view.check_end()
+        if end == "WIN":
+            state_add_log(view.state, "🏆 L’ennemi s’écroule.")
+            view.apply_win_rewards()
+            view.state["phase"] = "RESOLVE"
+            save_state_to_daily(view.s, discord_id=interaction.user.id, state=view.state, result="WIN")
+            return await view.refresh(interaction)
+
+        # riposte ennemi
+        edmg = view.enemy_attack()
+        if edmg > 0:
+            state_add_log(view.state, f"👹 Riposte: **-{edmg} HP**.")
+
+        end = view.check_end()
+        if end == "LOSE":
+            state_add_log(view.state, "💀 Tu tombes… Mikasa referme les yeux un instant.")
+            penalty = view.apply_death_penalty()
+            view.state["phase"] = "RESOLVE"
+            # applique prison si besoin
+            if penalty.get("jail_hours", 0) > 0:
+                # jail_until sur player sheet
+                p_row = hunt_services.get_player(view.s, interaction.user.id)
+                if p_row:
+                    row_i, player = p_row
+                    until = now_fr() + hunt_services.timedelta(hours=int(penalty["jail_hours"]))  # fallback
+            save_state_to_daily(view.s, discord_id=interaction.user.id, state=view.state, result="LOSE")
+            return await view.refresh(interaction)
+
+        # next turn
+        view.state["turn"] = int(view.state.get("turn", 1)) + 1
+        save_state_to_daily(view.s, discord_id=interaction.user.id, state=view.state, result="RUNNING")
+        await view.refresh(interaction)
+
+
+class HuntDefendButton(ui.Button):
+    def __init__(self):
+        super().__init__(label="🛡️ Se défendre", style=discord.ButtonStyle.secondary)
+
+    async def callback(self, interaction: discord.Interaction):
+        view: HuntDailyView = self.view  # type: ignore
+
+        d = _d20()
+        shield_gain = 0
+        if d >= 16:
+            shield_gain = _roll(4, 7)
+            state_add_log(view.state, f"🛡️ Garde parfaite. Jet **{d}** → bouclier +{shield_gain}.")
+        elif d >= 10:
+            shield_gain = _roll(2, 4)
+            state_add_log(view.state, f"🛡️ Tu te protèges. Jet **{d}** → bouclier +{shield_gain}.")
+        else:
+            shield_gain = 1
+            state_add_log(view.state, f"🛡️ Garde fragile. Jet **{d}** → bouclier +{shield_gain}.")
+
+        view.state["player"]["shield"] = int(view.state["player"].get("shield", 0)) + shield_gain
+
+        # riposte ennemi
+        edmg = view.enemy_attack()
+        if edmg > 0:
+            state_add_log(view.state, f"👹 L’ennemi frappe: **-{edmg} HP**.")
+
+        end = view.check_end()
+        if end == "LOSE":
+            state_add_log(view.state, "💀 KO… Mikasa soupire, puis note l’incident.")
+            view.apply_death_penalty()
+            view.state["phase"] = "RESOLVE"
+            save_state_to_daily(view.s, discord_id=interaction.user.id, state=view.state, result="LOSE")
+            return await view.refresh(interaction)
+
+        view.state["turn"] = int(view.state.get("turn", 1)) + 1
+        save_state_to_daily(view.s, discord_id=interaction.user.id, state=view.state, result="RUNNING")
+        await view.refresh(interaction)
+
+
+class HuntPotionButton(ui.Button):
+    def __init__(self):
+        super().__init__(label="🩹 Bandage", style=discord.ButtonStyle.success)
+
+    async def callback(self, interaction: discord.Interaction):
+        view: HuntDailyView = self.view  # type: ignore
+        p = view.state["player"]
+        pot = int(p.get("potions", 0))
+
+        if pot <= 0:
+            await interaction.response.send_message("😾 Tu n’as plus de bandage.", ephemeral=True)
+            return
+
+        heal = _roll(6, 12)
+        p["potions"] = pot - 1
+        p["hp"] = _clamp(int(p["hp"]) + heal, 0, int(p["max_hp"]))
+        state_add_log(view.state, f"🩹 Tu te soignes: **+{heal} HP**.")
+
+        # riposte ennemi (petite chance qu’il te laisse respirer)
+        if _roll(1, 100) <= 75:
+            edmg = view.enemy_attack()
+            if edmg > 0:
+                state_add_log(view.state, f"👹 Pendant que tu te soignes… **-{edmg} HP**.")
+
+        end = view.check_end()
+        if end == "LOSE":
+            state_add_log(view.state, "💀 Tu t’effondres malgré tout.")
+            view.apply_death_penalty()
+            view.state["phase"] = "RESOLVE"
+            save_state_to_daily(view.s, discord_id=interaction.user.id, state=view.state, result="LOSE")
+            return await view.refresh(interaction)
+
+        view.state["turn"] = int(view.state.get("turn", 1)) + 1
+        save_state_to_daily(view.s, discord_id=interaction.user.id, state=view.state, result="RUNNING")
+        await view.refresh(interaction)
+
+
+class HuntFleeButton(ui.Button):
+    def __init__(self):
+        super().__init__(label="🏃 Fuir", style=discord.ButtonStyle.primary)
+
+    async def callback(self, interaction: discord.Interaction):
+        view: HuntDailyView = self.view  # type: ignore
+
+        d = _d20()
+        if d >= 12:
+            state_add_log(view.state, f"🏃 Tu fuis avec succès. Jet **{d}**.")
+            # petite récompense quand même
+            view.state["player"]["money_gain"] = int(view.state["player"].get("money_gain", 0)) + _roll(5, 12)
+            view.state["phase"] = "RESOLVE"
+            save_state_to_daily(view.s, discord_id=interaction.user.id, state=view.state, result="FLEE")
+            return await view.refresh(interaction)
+
+        # échec: attaque gratuite
+        state_add_log(view.state, f"😬 Fuite ratée. Jet **{d}**.")
+        edmg = view.enemy_attack()
+        if edmg > 0:
+            state_add_log(view.state, f"👹 L’ennemi te rattrape: **-{edmg} HP**.")
+
+        end = view.check_end()
+        if end == "LOSE":
+            state_add_log(view.state, "💀 KO dans la fuite…")
+            view.apply_death_penalty()
+            view.state["phase"] = "RESOLVE"
+            save_state_to_daily(view.s, discord_id=interaction.user.id, state=view.state, result="LOSE")
+            return await view.refresh(interaction)
+
+        view.state["turn"] = int(view.state.get("turn", 1)) + 1
+        save_state_to_daily(view.s, discord_id=interaction.user.id, state=view.state, result="RUNNING")
+        await view.refresh(interaction)
+
+
+# ==========================================================
+# Fonction utilitaire appelée par bot.py
+# - Crée la view + embed
+# - Le bot.py envoie: followup.send(embed=..., view=..., ephemeral=True)
+# ==========================================================
+def build_daily_view(
+    *,
+    services,
+    author_id: int,
+    code_vip: str,
+    pseudo: str,
+    employee_boost: bool,
+    existing_state_json: str = "",
+) -> Tuple[discord.Embed, discord.ui.View, Dict[str, Any]]:
+    """
+    Si existing_state_json est un JSON valide, on reprend.
+    Sinon, on crée un nouvel état.
+    """
+    st = load_state(existing_state_json) if existing_state_json else None
+    if not st:
+        st = make_initial_state(
+            code_vip=code_vip,
+            pseudo=pseudo,
+            employee_boost=employee_boost,
+        )
+        state_add_log(st, f"🌫️ Mikasa te fixe… « {display_name(pseudo)}… j’ai une mission pour toi. »")
+        state_add_log(st, "➡️ Appuie sur **Continuer** pour entrer dans la rencontre.")
+
+    view = HuntDailyView(services=services, author_id=author_id, state=st)
+    emb = view.build_embed()
+    return emb, view, st
 
