@@ -167,14 +167,23 @@ def safe_tree_command(name: str, description: str):
         return bot.tree.command(name=name, description=description)(func)
     return decorator
 
-def safe_group_command(group: app_commands.Group, name: str, description: str):
+def safe_group_command(group, name: str, description: str):
     """
-    Idem mais pour app_commands.Group (ex: vip_group).
+    Ajoute une commande à un group seulement si elle n'existe pas déjà.
+    Supporte app_commands.Group et app_commands.CommandGroup.
     """
     def decorator(func):
-        if any(cmd.name == name for cmd in group.commands):
-            print(f"[SKIP] Group command déjà enregistrée: {group.name} {name}")
+        # Récupère les commandes existantes du group
+        existing = []
+        if hasattr(group, "commands"):
+            existing = list(group.commands)
+        elif hasattr(group, "walk_commands"):
+            existing = list(group.walk_commands())
+
+        if any(getattr(cmd, "name", None) == name for cmd in existing):
+            print(f"[SKIP] Group command déjà enregistrée: {getattr(group, 'name', 'group')} {name}")
             return func
+
         return group.command(name=name, description=description)(func)
     return decorator
 
