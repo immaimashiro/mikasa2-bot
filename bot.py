@@ -20,6 +20,10 @@ import ui
 import hunt_services
 import hunt_ui
 
+
+import uuid
+from datetime import datetime
+from services import now_fr, now_iso, normalize_code, display_name
 # ----------------------------
 # ENV + creds file
 # ----------------------------
@@ -67,6 +71,11 @@ bot.tree.add_command(qcm_group)
 bot.tree.add_command(vip_group)
 bot.tree.add_command(defi_group)
 bot.tree.add_command(cave_group)
+
+hunt_group = app_commands.Group(name="hunt", description="RPG Hunt (VIP)")
+hunt_key_group = app_commands.Group(name="key", description="Gestion des clés Hunt (HG)", parent=hunt_group)
+vip_log_group = app_commands.Group(name="log", description="Logs VIP", parent=vip_group)
+bot.tree.add_command(hunt_group)
 
 # ----------------------------
 # VIP autocomplete cache
@@ -1701,41 +1710,83 @@ async def hunt_key_group(interaction: discord.Interaction):
     # placeholder: Discord exige une commande “parent” si tu veux une sous-branche /hunt key claim.
     await interaction.response.send_message("Utilise une sous-commande: `/hunt key claim`.", ephemeral=True)
 
+def hunt_week_key(now=None) -> str:
+    # ISO week style: 2026-W03
+    now = now or now_fr()
+    y, w, _ = now.isocalendar()
+    return f"{y}-W{w:02d}"
 
 @safe_group_command(hunt_key_group, name="claim", description="Donner une clé Hunt à un VIP (HG).")
 @hg_check()
-@app_commands.describe(code_vip="SUB-XXXX-XXXX", tier="NORMAL ou GOLD", discord_id="Optionnel si tu veux forcer l'id")
-async def hunt_key_claim(interaction: discord.Interaction, code_vip: str, tier: str = "NORMAL", discord_id: str = ""):
+@app_commands.describe(code_vip="SUB-XXXX-XXXX", key_type="NORMAL ou GOLD (employé SubUrban)")
+async def hunt_key_claim(interaction: discord.Interaction, code_vip: str, key_type: str = "NORMAL"):
     await defer_ephemeral(interaction)
 
     code = normalize_code(code_vip)
+    key_type = (key_type or "NORMAL").strip().upper()
+    if key_type not in ("NORMAL", "GOLD"):
+        key_type = "NORMAL"
 
-    # on récupère le discord_id depuis VIP sheet si pas fourni
-    did = (discord_id or "").strip()
-    if not did:
-        row_i, vip = domain.find_vip_row_by_code(sheets, code)
-        if not row_i or not vip:
-            return await interaction.followup.send("❌ VIP introuvable.", ephemeral=True)
-        did = str(vip.get("discord_id", "")).strip()
-        if not did:
-            return await interaction.followup.send("❌ Ce VIP n’a pas de discord_id lié.", ephemeral=True)
+    # 1) vérifier VIP existe
+    row_i, vip = domain.find_vip_row_by_code(sheets, code)
+    if not row_i or not vip:
+        return await interaction.followup.send("❌ VIP introuvable.", ephemeral=True)
 
-    try:
-        did_int = int(did)
-    except Exception:
-        return await interaction.followup.send("❌ discord_id invalide.", ephemeral=True)
+    pseudo = display_name(vip.get("pseudo", code))
+    did = str(vip.get("discord_id", "") or "").strip()
 
-    ok, msg = hunt_services.claim_key(
-        sheets,
-        code_vip=code,
-        discord_id=did_int,
-        tier=tier,
-        staff_id=interaction.user.id
+    wk = hunt_week_key()
+
+    # 2) anti double claim par semaine: cherche dans HUNT_KEYS une clé déjà ASSIGNED/CLAIMED/OPENED pour ce VIP + week_key
+    rows = sheets.get_all_records("HUNT_KEYS")
+    for r in rows:
+        if str(r.get("week_key", "")).strip() != wk:
+            continue
+        if normalize_code(str(r.get("assigned_to_code_vip", ""))) != code:
+            continue
+        status = str(r.get("status", "")).strip().upper()
+        if status in ("ASSIGNED", "CLAIMED", "OPENED"):
+            return await interaction.followup.send(
+                f"😾 Une clé a déjà été donnée à **{pseudo}** cette semaine (**{wk}**).",
+                ephemeral=True
+            )
+
+    # 3) créer la ligne clé
+    key_id = f"KEY-{uuid.uuid4().hex[:10].upper()}"
+    sheets.append_by_headers("HUNT_KEYS", {
+        "key_id": key_id,
+        "week_key": wk,
+        "assigned_to_discord_id": did,
+        "assigned_to_code_vip": code,
+        "assigned_by_staff_id": str(interaction.user.id),
+        "key_type": key_type,
+        "status": "ASSIGNED",
+        "assigned_at": now_iso(),
+        "claimed_at": "",
+        "opened_at": "",
+        "loot_item_id": "",
+        "loot_rarity": "",
+        "loot_qty": "",
+        "loot_notes": "",
+    })
+
+    # 4) log
+    sheets.append_by_headers("HUNT_LOG", {
+        "timestamp": now_iso(),
+        "discord_id": did,
+        "code_vip": code,
+        "pseudo": pseudo,
+        "type": "KEY_ASSIGNED",
+        "value": f"{key_type}:{key_id}",
+        "visibility": "PRIVATE",
+        "notes": f"Assigné par {interaction.user.id} pour {wk}",
+    })
+
+    await interaction.followup.send(
+        f"✅ Clé **{key_type}** attribuée à **{pseudo}** (`{code}`)\n🔑 id: `{key_id}` • semaine: `{wk}`",
+        ephemeral=True
     )
-    if not ok:
-        return await interaction.followup.send(f"😾 {msg}", ephemeral=True)
 
-    await interaction.followup.send(msg, ephemeral=True)
 
 
 # ----------------------------
