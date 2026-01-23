@@ -13,7 +13,7 @@ from discord import ui
 
 import hunt_services
 from services import now_iso, now_fr, PARIS_TZ, display_name, catify
-
+import hunt_domain
 
 # ==========================================================
 # Mini "moteur" de rencontre
@@ -733,6 +733,155 @@ class HuntFleeButton(ui.Button):
         view.state["turn"] = int(view.state.get("turn", 1)) + 1
         save_state_to_daily(view.s, discord_id=interaction.user.id, state=view.state, result="RUNNING")
         await view.refresh(interaction)
+
+class HuntDailyView(ui.View):
+    def __init__(self, *, services, discord_id: int, code_vip: str, player_row_i: int, player: dict, daily_row_i: int, daily_row: dict, tester_bypass: bool):
+        super().__init__(timeout=None)
+        self.s = services
+        self.discord_id = discord_id
+        self.code_vip = code_vip
+        self.player_row_i = player_row_i
+        self.player = player
+        self.daily_row_i = daily_row_i
+        self.daily_row = daily_row
+        self.tester_bypass = tester_bypass
+
+        step = int(daily_row.get("step", 0) or 0)
+        raw = str(daily_row.get("state_json", "") or "").strip() or "{}"
+        try:
+            self.state = json.loads(raw)
+        except Exception:
+            self.state = {}
+
+        if not self.state:
+            self.state = hunt_domain.new_daily_state(player)
+
+        self._sync_buttons()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.discord_id:
+            await interaction.response.send_message(catify("😾 Pas touche. Lance ton /hunt daily."), ephemeral=True)
+            return False
+        return True
+
+    def build_embed(self) -> discord.Embed:
+        avatar_tag = str(self.player.get("avatar_tag","") or "").strip()
+        avatar_url = str(self.player.get("avatar_url","") or "").strip()
+
+        hp = int(self.state.get("player_hp", 20))
+        hpmax = int(self.state.get("player_hp_max", 20))
+        enemy = self.state.get("enemy", {})
+        ehp = int(enemy.get("hp", 0))
+        ehpmax = int(enemy.get("hp_max", 0))
+
+        e = discord.Embed(
+            title="🗺️ Hunt Daily",
+            description=(
+                f"🎭 **{self.player.get('pseudo','')}** {f'[{avatar_tag}]' if avatar_tag else ''}\n"
+                f"❤️ PV: **{hp}/{hpmax}**\n"
+                f"👹 Ennemi: **{enemy.get('name','?')}** • PV **{ehp}/{ehpmax}**\n\n"
+                f"📜 {self.state.get('scene','')}\n"
+            ),
+            color=discord.Color.dark_purple()
+        )
+        if avatar_url:
+            e.set_thumbnail(url=avatar_url)
+
+        logs = self.state.get("log", [])[-6:]
+        if logs:
+            e.add_field(name="🧾 Journal", value="\n".join(logs), inline=False)
+
+        if self.state.get("done"):
+            xp = int(self.state.get("reward_xp", 0))
+            dol = int(self.state.get("reward_dollars", 0))
+            extra = "🚨 **Prison**" if self.state.get("jailed") else ("💀 **KO**" if self.state.get("died") else "🏁 **Victoire**")
+            e.add_field(name="✅ Résultat", value=f"{extra}\n+{dol} Hunt$ • +{xp} XP", inline=False)
+
+        e.set_footer(text="Chaque choix sauvegarde. Pas de retour arrière. 🐾")
+        return e
+
+    def _sync_buttons(self):
+        done = bool(self.state.get("done"))
+        for item in self.children:
+            if isinstance(item, ui.Button):
+                item.disabled = done
+
+    async def _save(self):
+        # incrémente step: anti-retour arrière
+        step = int(self.daily_row.get("step", 0) or 0) + 1
+        self.daily_row["step"] = step
+        hunt_services.save_daily_state(self.s, self.daily_row_i, step=step, state=self.state)
+
+    async def _finalize_if_done(self):
+        if not self.state.get("done"):
+            return
+
+        xp = int(self.state.get("reward_xp", 0))
+        dol = int(self.state.get("reward_dollars", 0))
+        dmg_taken = max(0, int(self.state.get("player_hp_max", 20)) - int(self.state.get("player_hp", 20)))
+
+        died = bool(self.state.get("died"))
+        jailed = bool(self.state.get("jailed"))
+
+        # update player: dollars + xp + stats_hp (on remet au max pour le lendemain, sinon trop punitif)
+        try:
+            cur_d = int(self.player.get("hunt_dollars", 0) or 0)
+        except Exception:
+            cur_d = 0
+
+        self.s.update_cell_by_header("HUNT_PLAYERS", self.player_row_i, "hunt_dollars", cur_d + dol)
+
+        # XP (simple pour l’instant)
+        try:
+            cur_xp = int(self.player.get("xp", 0) or 0)
+            cur_total = int(self.player.get("xp_total", 0) or 0)
+        except Exception:
+            cur_xp, cur_total = 0, 0
+        self.s.update_cell_by_header("HUNT_PLAYERS", self.player_row_i, "xp", cur_xp + xp)
+        self.s.update_cell_by_header("HUNT_PLAYERS", self.player_row_i, "xp_total", cur_total + xp)
+
+        # prison
+        if jailed:
+            hours = int(self.state.get("jail_hours", 6) or 6)
+            until = (now_fr()).astimezone(PARIS_TZ)
+            until = until.replace(microsecond=0) + __import__("datetime").timedelta(hours=hours)
+            self.s.update_cell_by_header("HUNT_PLAYERS", self.player_row_i, "jail_until", until.isoformat())
+
+        # last daily
+        self.s.update_cell_by_header("HUNT_PLAYERS", self.player_row_i, "last_daily_date", hunt_services._today_key())
+
+        summary = " | ".join(self.state.get("log", [])[-4:])
+        hunt_services.finish_daily(self.s, self.daily_row_i, summary=summary, xp=xp, dollars=dol, dmg=dmg_taken, died=died, jailed=jailed)
+
+    @ui.button(label="🗡️ Attaquer", style=discord.ButtonStyle.danger)
+    async def btn_attack(self, interaction: discord.Interaction, button: ui.Button):
+        self.state = hunt_domain.apply_attack(self.state, self.player)
+        await self._save()
+        await self._finalize_if_done()
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @ui.button(label="🩹 Se soigner", style=discord.ButtonStyle.primary)
+    async def btn_heal(self, interaction: discord.Interaction, button: ui.Button):
+        self.state = hunt_domain.apply_heal(self.state, self.player)
+        await self._save()
+        await self._finalize_if_done()
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @ui.button(label="👜 Voler", style=discord.ButtonStyle.secondary)
+    async def btn_steal(self, interaction: discord.Interaction, button: ui.Button):
+        self.state = hunt_domain.apply_steal(self.state, self.player)
+        await self._save()
+        await self._finalize_if_done()
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @ui.button(label="✅ Fermer", style=discord.ButtonStyle.success)
+    async def btn_close(self, interaction: discord.Interaction, button: ui.Button):
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(content="✅ Hunt daily fermé.", embed=None, view=self)
 
 class HuntStealButton(ui.Button):
     def __init__(self):
