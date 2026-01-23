@@ -1,6 +1,6 @@
 # hunt_services.py
 # -*- coding: utf-8 -*-
-
+import json
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -161,6 +161,103 @@ def set_avatar(sheets, *, discord_id: int, avatar_tag: str, avatar_url: str) -> 
     sheets.update_cell_by_header(T_PLAYERS, row_i, "avatar_tag", avatar_tag)
     sheets.update_cell_by_header(T_PLAYERS, row_i, "avatar_url", avatar_url)
     sheets.update_cell_by_header(T_PLAYERS, row_i, "updated_at", now_iso())
+
+def _today_key() -> str:
+    return now_fr().strftime("%Y-%m-%d")
+
+def _week_key() -> str:
+    # semaine basée sur "vendredi 17h" comme ton système VIP
+    # on réutilise challenge_week_window pour rester cohérent
+    start, end = domain.challenge_week_window()
+    return start.strftime("W%Y-%m-%d")  # ex: W2026-01-09
+
+def _find_daily_row(sheets, discord_id: int, date_key: str):
+    rows = sheets.get_all_records(T_DAILY)
+    for idx, r in enumerate(rows, start=2):
+        if str(r.get("discord_id","")).strip() == str(discord_id) and str(r.get("date_key","")).strip() == date_key:
+            return idx, r
+    return None, None
+
+def ensure_daily(sheets, *, discord_id: int, code_vip: str, date_key: str) -> tuple[int, dict]:
+    row_i, row = _find_daily_row(sheets, discord_id, date_key)
+    if row_i and row:
+        return row_i, row
+
+    base = {
+        "date_key": date_key,
+        "discord_id": str(discord_id),
+        "code_vip": code_vip,
+        "started_at": now_iso(),
+        "finished_at": "",
+        "status": "RUNNING",
+        "step": 0,
+        "state_json": "{}",
+        "result_summary": "",
+        "xp_earned": 0,
+        "dollars_earned": 0,
+        "dmg_taken": 0,
+        "death_flag": "FALSE",
+        "jail_flag": "FALSE",
+    }
+    sheets.append_by_headers(T_DAILY, base)
+    row_i2, row2 = _find_daily_row(sheets, discord_id, date_key)
+    if not row_i2 or not row2:
+        raise RuntimeError("Impossible de créer/récupérer HUNT_DAILY.")
+    return row_i2, row2
+
+def save_daily_state(sheets, row_i: int, *, step: int, state: dict):
+    sheets.update_cell_by_header(T_DAILY, row_i, "step", int(step))
+    sheets.update_cell_by_header(T_DAILY, row_i, "state_json", json.dumps(state, ensure_ascii=False))
+    # status reste RUNNING tant que pas fini
+
+def finish_daily(sheets, row_i: int, *, summary: str, xp: int, dollars: int, dmg: int, died: bool, jailed: bool):
+    sheets.update_cell_by_header(T_DAILY, row_i, "finished_at", now_iso())
+    sheets.update_cell_by_header(T_DAILY, row_i, "status", "DONE")
+    sheets.update_cell_by_header(T_DAILY, row_i, "result_summary", summary[:1800])
+    sheets.update_cell_by_header(T_DAILY, row_i, "xp_earned", int(xp))
+    sheets.update_cell_by_header(T_DAILY, row_i, "dollars_earned", int(dollars))
+    sheets.update_cell_by_header(T_DAILY, row_i, "dmg_taken", int(dmg))
+    sheets.update_cell_by_header(T_DAILY, row_i, "death_flag", "TRUE" if died else "FALSE")
+    sheets.update_cell_by_header(T_DAILY, row_i, "jail_flag", "TRUE" if jailed else "FALSE")
+
+def log_hunt(sheets, *, discord_id: int, code_vip: str, kind: str, message: str):
+    try:
+        sheets.append_by_headers(T_LOG, {
+            "timestamp": now_iso(),
+            "discord_id": str(discord_id),
+            "code_vip": code_vip,
+            "kind": kind,
+            "message": message[:1800],
+        })
+    except Exception:
+        pass
+
+def _find_key_claim(sheets, code_vip: str, week_key: str):
+    rows = sheets.get_all_records(T_KEYS)
+    for idx, r in enumerate(rows, start=2):
+        if str(r.get("code_vip","")).strip().upper() == code_vip.upper() and str(r.get("week_key","")).strip() == week_key:
+            return idx, r
+    return None, None
+
+def claim_weekly_key(sheets, *, code_vip: str, discord_id: int, claimed_by: int, key_type: str):
+    wk = _week_key()
+    row_i, row = _find_key_claim(sheets, code_vip, wk)
+    if row_i:
+        return False, "😾 Une clé a déjà été claim cette semaine pour ce VIP."
+
+    sheets.append_by_headers(T_KEYS, {
+        "week_key": wk,
+        "code_vip": code_vip,
+        "discord_id": str(discord_id),
+        "key_type": key_type.upper(),
+        "claimed_at": now_iso(),
+        "claimed_by": str(claimed_by),
+        "opened_at": "",
+        "open_item_id": "",
+        "open_qty": "",
+        "open_rarity": "",
+    })
+    return True, f"✅ Clé **{key_type.upper()}** attribuée (semaine {wk})."
 
 # ==========================================================
 # PLAYERS
