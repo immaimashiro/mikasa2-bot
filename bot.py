@@ -1,6 +1,6 @@
 # bot.py
 # -*- coding: utf-8 -*-
-import json
+import json, random
 import os
 import io
 import traceback
@@ -20,7 +20,8 @@ import ui
 import hunt_services
 import hunt_ui
 
-
+import hunt_services as hs
+import hunt_domain as hd
 import uuid
 from datetime import datetime
 from services import now_fr, now_iso, normalize_code, display_name
@@ -272,45 +273,48 @@ async def hunt_daily(interaction: discord.Interaction):
     await interaction.followup.send(embed=view.build_embed(), view=view, ephemeral=True)
 
 
-@safe_group_command(hunt_group, name="avatar", description="Choisir ton personnage (direction SubUrban).")
+@hunt_group.command(name="avatar", description="Choisir ton personnage (direction SubUrban).")
 async def hunt_avatar(interaction: discord.Interaction):
     await defer_ephemeral(interaction)
 
-    # doit être sur serveur
+    # retrouve VIP lié (comme /vipme)
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.followup.send("❌ À utiliser sur le serveur.", ephemeral=True)
 
-    # doit être lié à un VIP
     row_i, vip = domain.find_vip_row_by_discord_id(sheets, interaction.user.id)
     if not row_i or not vip:
         return await interaction.followup.send("😾 Ton Discord n’est pas lié à un VIP. Demande au staff.", ephemeral=True)
 
-    code = normalize_code(str(vip.get("code_vip", "")))
-    pseudo = display_name(vip.get("pseudo", code))
-    is_emp = is_employee(interaction.user)  # ta fonction existante
+    vip_code = domain.normalize_code(str(vip.get("code_vip", "")))
+    pseudo = domain.display_name(vip.get("pseudo", vip_code))
 
-    # crée/assure le profil HUNT
-    hunt_services.ensure_hunt_player(
+    # employee flag
+    is_emp = is_employee(interaction.user)
+
+    # ensure player
+    hunt_domain.ensure_player(
         sheets,
         discord_id=interaction.user.id,
-        code_vip=code,
+        vip_code=vip_code,
         pseudo=pseudo,
-        is_employee=is_emp,
+        is_employee=is_emp
     )
 
-    view = hunt_ui.HuntAvatarView(
-        services=sheets,
-        discord_id=interaction.user.id,
-        code_vip=code,
-        pseudo=pseudo,
-        is_employee=is_emp,
+    view = hunt_ui.HuntAvatarView(author_id=interaction.user.id, sheets=sheets, discord_id=interaction.user.id)
+
+    emb = discord.Embed(
+        title="🎭 Choix du personnage",
+        description="Choisis un membre de la direction SubUrban.\nTon choix s’affichera comme **[MAI]**, **[ROXY]**, etc.",
+        color=discord.Color.dark_purple()
     )
 
-    await interaction.followup.send(
-        embed=view.build_embed(),
-        view=view,
-        ephemeral=True
-    )
+    # thumbnail si déjà un avatar
+    _, player = hunt_domain.get_player_row(sheets, interaction.user.id)
+    if player and str(player.get("avatar_url","")).strip():
+        emb.set_thumbnail(url=str(player.get("avatar_url","")).strip())
+
+    emb.set_footer(text="Mikasa prépare ton badge… 🐾")
+    await interaction.followup.send(embed=emb, view=view, ephemeral=True)
 
 @safe_group_command(hunt_group, name="key", description="Gestion des clés Hunt (staff).")
 @staff_check()
@@ -1786,133 +1790,151 @@ async def qcm_top(interaction: discord.Interaction):
 # ----------------------------
 # /hunt daily (public)
 # ----------------------------
-@safe_group_command(hunt_group, name="daily", description="Lancer ta quête journalière (RPG).")
+@hunt_group.command(name="daily", description="Lancer ta quête du jour (RPG).")
 async def hunt_daily(interaction: discord.Interaction):
     await defer_ephemeral(interaction)
 
-    # 0) doit être sur serveur + member
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.followup.send("❌ À utiliser sur le serveur.", ephemeral=True)
 
-    # 1) doit être VIP lié
+    # VIP lié obligatoire
     row_i, vip = domain.find_vip_row_by_discord_id(sheets, interaction.user.id)
     if not row_i or not vip:
         return await interaction.followup.send("😾 Ton Discord n’est pas lié à un VIP. Demande au staff.", ephemeral=True)
 
-    code = normalize_code(str(vip.get("code_vip", "")))
-    pseudo = display_name(vip.get("pseudo", code))
+    vip_code = domain.normalize_code(str(vip.get("code_vip", "")))
+    pseudo = domain.display_name(vip.get("pseudo", vip_code))
+    is_emp = is_employee(interaction.user)
 
-    # 2) ensure player + prison check
-    p_row_i, player = hunt_services.ensure_player(
-        sheets,
-        discord_id=interaction.user.id,
-        code_vip=code,
-        pseudo=pseudo,
-        avatar_tag="",  # tu le rempliras plus tard via UI (/hunt profile)
-    )
+    # ensure player
+    p_row_i, player = hd.get_player_row(sheets, interaction.user.id)
+    if not p_row_i or not player:
+        p_row_i, player = hd.ensure_player(
+            sheets, discord_id=interaction.user.id, vip_code=vip_code, pseudo=pseudo, is_employee=is_emp
+        )
 
-    in_jail, until = hunt_services.is_in_jail(player)
-    if in_jail and until:
+    tester = hs.is_tester(interaction.user.id)
+    date_key = hs.today_key()
+
+    # anti double daily
+    if not tester and hd.daily_exists(sheets, interaction.user.id, date_key):
+        return await interaction.followup.send("😾 Tu as déjà fait ta quête aujourd’hui. Reviens demain.", ephemeral=True)
+
+    # prison check
+    in_jail, until = hd.is_in_jail(player)
+    if in_jail and not tester:
         return await interaction.followup.send(
-            f"🚓 Tu es en prison jusqu’à **{until.strftime('%d/%m %H:%M')}** (FR). Reviens plus tard.",
+            f"🔒 Tu es en prison jusqu’à `{until}`. (max 12h)\nReviens plus tard…",
             ephemeral=True
         )
 
-    jailed, until = hunt_services.is_jailed(sheets, interaction.user.id)
-    if jailed:
-        return await interaction.followup.send(
-            f"🚔 Tu es en prison jusqu’à **{until.astimezone(services.PARIS_TZ).strftime('%d/%m %H:%M')}**.\n"
-            "Mikasa gratte la porte: *prrr…* 🐾",
-            ephemeral=True
-        )
+    # require avatar (pour l’immersion)
+    avatar_tag = str(player.get("avatar_tag","")).strip()
+    avatar_url = str(player.get("avatar_url","")).strip()
+    if not avatar_tag:
+        return await interaction.followup.send("🎭 Choisis d’abord ton perso avec **/hunt avatar**.", ephemeral=True)
 
+    # rolls
+    d20_1 = random.randint(1, 20)
+    d20_2 = random.randint(1, 20)
+    rolls = f"d20={d20_1}, d20={d20_2}"
 
-    # 3) anti double daily
-    if hunt_services.daily_already_started(sheets, interaction.user.id):
-        return await interaction.followup.send("😾 Daily déjà lancé aujourd’hui. Reviens demain.", ephemeral=True)
+    # story seed
+    encounter = random.choice(["coyote", "voyou", "rat mutant", "puma", "chien errant"])
+    action = random.choice(["explorer", "négocier", "attaquer", "voler"])
+    result = "WIN" if (d20_1 + d20_2) >= 22 else "LOSE"
 
-    # 4) on verrouille immédiatement (anti relance)
-    seed = f"{interaction.user.id}:{hunt_services.today_key_fr()}"
-    hunt_services.start_daily(sheets, discord_id=interaction.user.id, code_vip=code, seed=seed)
+    jail_hours = 0
+    if action == "voler":
+        # risque prison
+        if (d20_1 <= 5) and (not tester):
+            jail_hours = random.randint(2, 12)
 
-    # 5) pour l’instant: mini résultat RNG (on fera la vraie UI multi-tours dans hunt_ui.py)
-    d20 = hunt_services.roll_d20()
+    money = hs.money_reward()
+    xp = hs.xp_reward()
 
-    # argent aléatoire “pas trop dur/pas trop easy”
-    base = hunt_services.roll_range(12, 25)      # garantie
-    bonus = max(0, d20 - 10) * hunt_services.roll_range(1, 3)
-    gain = base + bonus
+    # loose => pénalité soft
+    money_delta = money if result == "WIN" else max(5, money // 3)
+    xp_delta = xp if result == "WIN" else max(2, xp // 3)
 
-    cur_money = int(player.get("money", 0) or 0)
-    new_money = hunt_services.add_money(sheets, p_row_i, cur_money, gain)
+    # loot
+    gold_bonus = bool(is_emp)  # tu avais demandé + de chances employés
+    loots = hs.roll_loot(gold_bonus=gold_bonus)
+    rewards = {"loot": loots, "hunt_dollars": money_delta, "xp": xp_delta}
 
-    # score hebdo (petit)
-    hunt_services.add_weekly_score(
+    # update player currency + xp + inventory + stats
+    inv = hs.inv_load(str(player.get("inventory_json","")))
+    for item_id, qty in loots:
+        hs.inv_add(inv, item_id, qty)
+
+    # update sheet
+    try:
+        cur_money = int(player.get("hunt_dollars", 0) or 0)
+    except Exception:
+        cur_money = 0
+    try:
+        cur_xp = int(player.get("xp", 0) or 0)
+    except Exception:
+        cur_xp = 0
+    try:
+        cur_xpt = int(player.get("xp_total", 0) or 0)
+    except Exception:
+        cur_xpt = 0
+
+    new_money = cur_money + money_delta
+    new_xp = cur_xp + xp_delta
+    new_xpt = cur_xpt + xp_delta
+
+    sheets.update_cell_by_header(hs.T_PLAYERS, p_row_i, "hunt_dollars", new_money)
+    sheets.update_cell_by_header(hs.T_PLAYERS, p_row_i, "xp", new_xp)
+    sheets.update_cell_by_header(hs.T_PLAYERS, p_row_i, "xp_total", new_xpt)
+    sheets.update_cell_by_header(hs.T_PLAYERS, p_row_i, "inventory_json", hs.inv_dump(inv))
+    sheets.update_cell_by_header(hs.T_PLAYERS, p_row_i, "last_daily_date", date_key)
+    sheets.update_cell_by_header(hs.T_PLAYERS, p_row_i, "total_runs", int(player.get("total_runs",0) or 0) + 1)
+
+    if jail_hours > 0:
+        hd.apply_jail(sheets, p_row_i, jail_hours)
+
+    # append daily row
+    hd.append_daily(
         sheets,
+        date_key=date_key,
         discord_id=interaction.user.id,
-        code_vip=code,
-        pseudo=pseudo,
-        delta_score=1
+        vip_code=vip_code,
+        result=result,
+        story=f"{action}:{encounter}",
+        rolls=rolls,
+        rewards_json=json.dumps(rewards, ensure_ascii=False),
+        money_delta=money_delta,
+        xp_delta=xp_delta,
+        jail_delta_hours=jail_hours
     )
 
-    # chance “vol” -> prison possible
-    # (tu as demandé: voler + risque prison max 12h)
-    stole = (d20 >= 15)
-    got_caught = stole and (hunt_services.roll_d20() <= 8)
-
-    notes = f"d20={d20} gain=${gain}"
-    result = "GAIN"
-
-    extra = ""
-    if stole:
-        extra += "\n🕵️ Tu as tenté un petit larcin…"
-        if got_caught:
-            hours = hunt_services.roll_range(2, 12)
-            jail_until = (services.now_fr() + timedelta(hours=hours)).astimezone(services.PARIS_TZ)
-            hunt_services.set_jail_until(sheets, p_row_i, jail_until.isoformat())
-            result = "JAIL"
-            extra += f"\n🚓 Raté. Prison **{hours}h**."
-        else:
-            steal_gain = hunt_services.roll_range(20, 60)
-            new_money = hunt_services.add_money(sheets, p_row_i, new_money, steal_gain)
-            extra += f"\n💰 Réussi. +${steal_gain}."
-
-    # 6) on termine daily (pour l’instant on “finish” direct)
-    hunt_services.finish_daily(sheets, discord_id=interaction.user.id, result=result, notes=notes)
-
-    # 7) message
-    msg = (
-        f"🧭 **HUNT • Daily**\n"
-        f"👤 **{pseudo}** (`{code}`)\n"
-        f"🎲 Jet: **{d20}**\n"
-        f"💵 Gain: **+${gain}**\n"
-        f"🏦 Total: **${new_money}**"
-        f"{extra}\n\n"
-        f"🐾 Mikasa referme le carnet… *tap tap*"
+    # embed rendu
+    title = f"🗺️ Hunt Daily • [{avatar_tag}]"
+    desc = (
+        f"👤 {interaction.user.mention} • 🎴 `{vip_code}`\n"
+        f"🧭 Action: **{action}**\n"
+        f"👁️ Rencontre: **{encounter}**\n"
+        f"🎲 Jets: `{rolls}`\n\n"
+        f"Résultat: **{result}**\n"
+        f"💰 +{money_delta} Hunt$ • ✨ +{xp_delta} XP"
     )
-   # récupérer l'éventuel state existant (reprise)
-    dk = hunt_services.today_key_fr()
-    rows = sheets.get_all_records(hunt_services.T_DAILY)
-    existing_notes = ""
-    for r in rows:
-        if str(r.get("day_key","")).strip() == dk and str(r.get("discord_id","")).strip() == str(interaction.user.id):
-            existing_notes = str(r.get("notes","") or "").strip()
-            break
+    if jail_hours > 0:
+        desc += f"\n\n🚔 Mauvais plan… **prison {jail_hours}h**."
 
-    emb, view, st = hunt_ui.build_daily_view(
-        services=sheets,
-        author_id=interaction.user.id,
-        code_vip=code,
-        pseudo=pseudo,
-        employee_boost=is_employee(interaction.user),  # ou ta logique staff/employé
-        existing_state_json=existing_notes,
-    )
+    emb = discord.Embed(title=title, description=desc, color=discord.Color.blurple())
+    if avatar_url:
+        emb.set_thumbnail(url=avatar_url)
 
-    # Sauvegarde immédiate (anti “retour en arrière”)
-    hunt_ui.save_state_to_daily(sheets, discord_id=interaction.user.id, state=st, result="RUNNING")
+    loot_lines = []
+    for item_id, qty in loots:
+        meta = hs.LOOT_ITEMS.get(item_id, {"label": item_id})
+        loot_lines.append(f"• {meta['label']} x{qty}")
+    emb.add_field(name="🎁 Loot", value=("\n".join(loot_lines) if loot_lines else "—"), inline=False)
+    emb.set_footer(text="Mikasa fait grincer le dé… 🐾")
 
-    await interaction.followup.send(embed=emb, view=view, ephemeral=True)
-
+    await interaction.followup.send(embed=emb, ephemeral=True)
 
 
 # ----------------------------
