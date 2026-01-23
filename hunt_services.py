@@ -5,12 +5,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import random
 
 from services import SheetsService, PARIS_TZ, now_fr, now_iso, normalize_code, display_name, challenge_week_window
-
+import domain
 
 # ==========================================================
 # Tables Sheets (tu les as déjà dans ton Google Sheets)
@@ -23,7 +23,6 @@ T_LOG = "HUNT_LOG"
 T_ITEMS = "HUNT_ITEMS"
 T_BOSSES = "HUNT_BOSSES"
 T_REPUTATION = "HUNT_REPUTATION"
-
 
 # ==========================================================
 # Helpers clés
@@ -78,6 +77,90 @@ def append_log(s: SheetsService, payload: Dict[str, Any]) -> None:
         # log non bloquant
         pass
 
+
+def _find_player_row_by_discord_id(sheets, discord_id: int) -> Tuple[Optional[int], Optional[Dict[str, Any]]]:
+    rows = sheets.get_all_records(T_PLAYERS)
+    for idx, r in enumerate(rows, start=2):
+        if str(r.get("discord_id", "")).strip() == str(discord_id):
+            return idx, r
+    return None, None
+
+
+def ensure_hunt_player(sheets, *, discord_id: int, code_vip: str, pseudo: str, is_employee: bool) -> Tuple[int, Dict[str, Any]]:
+    """
+    Crée la ligne HUNT_PLAYERS si elle n'existe pas, sinon met à jour les champs de base.
+    Retourne (row_index, row_dict).
+    """
+    row_i, row = _find_player_row_by_discord_id(sheets, discord_id)
+    ts = now_iso()
+
+    if row_i and row:
+        # rafraîchir infos de base
+        sheets.update_cell_by_header(T_PLAYERS, row_i, "code_vip", code_vip)
+        sheets.update_cell_by_header(T_PLAYERS, row_i, "pseudo", display_name(pseudo))
+        sheets.update_cell_by_header(T_PLAYERS, row_i, "is_employee", "TRUE" if is_employee else "FALSE")
+        sheets.update_cell_by_header(T_PLAYERS, row_i, "updated_at", ts)
+        # relire proprement
+        row_i2, row2 = _find_player_row_by_discord_id(sheets, discord_id)
+        return (row_i2 or row_i), (row2 or row)
+
+    # create defaults
+    base = {
+        "discord_id": str(discord_id),
+        "code_vip": code_vip,
+        "pseudo": display_name(pseudo),
+        "is_employee": "TRUE" if is_employee else "FALSE",
+
+        "avatar_tag": "",
+        "avatar_url": "",
+        "ally_tag": "",
+        "ally_url": "",
+
+        "level": 1,
+        "xp": 0,
+        "xp_total": 0,
+
+        "stats_hp": 20,
+        "stats_hp_max": 20,
+        "stats_atk": 3,
+        "stats_def": 2,
+        "stats_per": 2,
+        "stats_cha": 2,
+        "stats_luck": 1,
+
+        "hunt_dollars": 0,
+        "heat": 0,
+        "jail_until": "",
+        "last_daily_date": "",
+
+        "weekly_week_key": "",
+        "weekly_wins": 0,
+
+        "total_runs": 0,
+        "total_wins": 0,
+        "total_deaths": 0,
+
+        "inventory_json": "{}",
+
+        "created_at": ts,
+        "updated_at": ts,
+    }
+
+    sheets.append_by_headers(T_PLAYERS, base)
+    row_i3, row3 = _find_player_row_by_discord_id(sheets, discord_id)
+    if not row_i3 or not row3:
+        raise RuntimeError("Impossible de créer/récupérer la ligne HUNT_PLAYERS.")
+    return row_i3, row3
+
+
+def set_avatar(sheets, *, discord_id: int, avatar_tag: str, avatar_url: str) -> None:
+    row_i, row = _find_player_row_by_discord_id(sheets, discord_id)
+    if not row_i:
+        raise RuntimeError("Profil HUNT introuvable (HUNT_PLAYERS).")
+
+    sheets.update_cell_by_header(T_PLAYERS, row_i, "avatar_tag", avatar_tag)
+    sheets.update_cell_by_header(T_PLAYERS, row_i, "avatar_url", avatar_url)
+    sheets.update_cell_by_header(T_PLAYERS, row_i, "updated_at", now_iso())
 
 # ==========================================================
 # PLAYERS
