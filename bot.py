@@ -192,6 +192,47 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         pass
 
 
+@safe_group_command(hunt_group, name="avatar", description="Choisir ton personnage (direction SubUrban).")
+async def hunt_avatar(interaction: discord.Interaction):
+    await defer_ephemeral(interaction)
+
+    # doit être sur serveur
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return await interaction.followup.send("❌ À utiliser sur le serveur.", ephemeral=True)
+
+    # doit être lié à un VIP
+    row_i, vip = domain.find_vip_row_by_discord_id(sheets, interaction.user.id)
+    if not row_i or not vip:
+        return await interaction.followup.send("😾 Ton Discord n’est pas lié à un VIP. Demande au staff.", ephemeral=True)
+
+    code = normalize_code(str(vip.get("code_vip", "")))
+    pseudo = display_name(vip.get("pseudo", code))
+    is_emp = is_employee(interaction.user)  # ta fonction existante
+
+    # crée/assure le profil HUNT
+    hunt_services.ensure_hunt_player(
+        sheets,
+        discord_id=interaction.user.id,
+        code_vip=code,
+        pseudo=pseudo,
+        is_employee=is_emp,
+    )
+
+    view = hunt_ui.HuntAvatarView(
+        services=sheets,
+        discord_id=interaction.user.id,
+        code_vip=code,
+        pseudo=pseudo,
+        is_employee=is_emp,
+    )
+
+    await interaction.followup.send(
+        embed=view.build_embed(),
+        view=view,
+        ephemeral=True
+    )
+
+
 def safe_tree_command(name: str, description: str):
     """
     Décorateur qui n'ajoute la commande que si elle n'existe pas déjà dans bot.tree.
