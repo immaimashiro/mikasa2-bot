@@ -61,48 +61,48 @@ s3 = S3Service()
 
 scheduler = AsyncIOScheduler(timezone=services.PARIS_TZ)
 
-qcm_group  = app_commands.Group(name="qcm", description="QCM quotidien Los Santos (VIP)")
-vip_group  = app_commands.Group(name="vip", description="Commandes VIP (staff)")
-defi_group = app_commands.Group(name="defi", description="Commandes défis (HG)")
-cave_group = app_commands.Group(name="cave", description="Cave Mikasa (HG)")
-
+# ----------------------------
+# Groups (slash)
+# ----------------------------
 
 def safe_add_group(group: app_commands.Group):
     """
-    Ajoute un groupe à bot.tree seulement s'il n'existe pas déjà.
+    Ajoute un groupe RACINE à bot.tree seulement s'il n'existe pas déjà.
+    ⚠️ Ne pas utiliser pour les sous-groupes (parent=...), ils sont attachés au parent.
     """
     existing = bot.tree.get_command(group.name)
     if existing is not None:
         print(f"[SKIP] Group déjà enregistré: /{group.name}")
         return existing
-
-    bot.tree.add_command(group)   # ✅ c'était ça qu'il fallait faire
+    bot.tree.add_command(group)
     return group
 
-# ✅ ajoute au tree UNE fois
+# Groupes RACINE
 hunt_group = app_commands.Group(name="hunt", description="Chasse au trésor (RPG)")
-safe_add_group(hunt_group)
+qcm_group  = app_commands.Group(name="qcm", description="QCM quotidien Los Santos (VIP)")
+vip_group  = app_commands.Group(name="vip", description="Commandes VIP (staff)")
+defi_group = app_commands.Group(name="defi", description="Commandes défis (HG)")
+cave_group = app_commands.Group(name="cave", description="Cave Mikasa (HG)")
 
-hunt_key_group = app_commands.Group(
-    name="key",
-    description="Gestion des clés Hunt (HG)",
-    parent=hunt_group
-)
-# selon version discord.py, parfois pas nécessaire, mais safe:
-safe_add_group(hunt_key_group)
+# Ajout au tree (UNE seule fois) — seulement pour les groupes racine
+safe_add_group(hunt_group)
 safe_add_group(qcm_group)
 safe_add_group(vip_group)
 safe_add_group(defi_group)
 safe_add_group(cave_group)
 
-# ✅ sous-group /hunt key
+# Sous-groupes (NE PAS add_command au tree)
 hunt_key_group = app_commands.Group(
     name="key",
     description="Gestion des clés Hunt (HG)",
     parent=hunt_group
 )
 
-vip_log_group = app_commands.Group(name="log", description="Logs VIP", parent=vip_group)
+vip_log_group = app_commands.Group(
+    name="log",
+    description="Logs VIP",
+    parent=vip_group
+)
 
 # ----------------------------
 # VIP autocomplete cache
