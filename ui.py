@@ -419,21 +419,298 @@ def build_defi_status_embed(s, code: str, vip: dict) -> discord.Embed:
     return e
 
 # ==========================================================
-# Défis (HG) - inchangé (tu peux garder tout ce que tu avais)
+# Défis (HG) - on garde tes views existantes, inchangées
 # ==========================================================
-# ... (je laisse tout ton code défi / edit / help identique)
-# ==========================================================
+
+def yn_emoji(flag: bool) -> str:
+    return "✔️" if flag else "❌"
+
+def col_letter_for_defi(n: int) -> str:
+    # DEFIS: d1..d4 = colonnes C..F
+    return chr(ord("C") + (n - 1))
+
+
+class DefiValidateView(discord.ui.View):
+    def __init__(self, *, author: discord.Member, services, code: str, wk: int, wk_key: str, wk_label: str,
+                 row_i: int, row: dict, tasks: List[str], vip_pseudo: str):
+        super().__init__(timeout=180)
+        self.author = author
+        self.s = services
+        self.code = code
+        self.wk = wk
+        self.wk_key = wk_key
+        self.wk_label = wk_label
+        self.row_i = row_i
+        self.row = row
+        self.tasks = tasks
+        self.vip_pseudo = vip_pseudo
+
+        self.state = {
+            1: bool(str(row.get("d1", "")).strip()),
+            2: bool(str(row.get("d2", "")).strip()),
+            3: bool(str(row.get("d3", "")).strip()),
+            4: bool(str(row.get("d4", "")).strip()),
+        }
+        self.locked = {n: self.state[n] for n in range(1, 5)}
+        self._refresh_buttons()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author.id:
+            await interaction.response.send_message(catify("😾 Pas touche. Lance ta propre commande."), ephemeral=True)
+            return False
+        return True
+
+    def _build_embed(self) -> discord.Embed:
+        start, end = domain.challenge_week_window()
+        lines = []
+        for i in range(1, 5):
+            lines.append(f"{yn_emoji(self.state[i])} {self.tasks[i-1]}")
+        desc = (
+            f"👤 **{self.vip_pseudo}** • `{self.code}`\n"
+            f"📌 {self.wk_label}\n"
+            f"🗓️ **{start.strftime('%d/%m %H:%M')} → {end.strftime('%d/%m %H:%M')}** (FR)\n\n"
+            + "\n".join(lines)
+            + "\n\nClique pour cocher. Les ✔️ déjà tamponnés sont verrouillés."
+        )
+        embed = discord.Embed(title="📸 Validation des défis (HG)", description=desc, color=discord.Color.dark_purple())
+        embed.set_footer(text="Tampon Mikasa: une fois posé, il ne s’efface pas. 🐾")
+        return embed
+
+    def _refresh_buttons(self):
+        for child in self.children:
+            if isinstance(child, discord.ui.Button) and child.custom_id and child.custom_id.startswith("defi_toggle_"):
+                n = int(child.custom_id.split("_")[-1])
+                child.label = f"{yn_emoji(self.state[n])} Défi {n}"
+                child.disabled = bool(self.locked[n])
+
+    async def _edit(self, interaction: discord.Interaction):
+        self._refresh_buttons()
+        await interaction.response.edit_message(embed=self._build_embed(), view=self)
+
+    @discord.ui.button(label="❌ Défi 1", style=discord.ButtonStyle.secondary, custom_id="defi_toggle_1")
+    async def toggle_1(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.state[1] = not self.state[1]
+        await self._edit(interaction)
+
+    @discord.ui.button(label="❌ Défi 2", style=discord.ButtonStyle.secondary, custom_id="defi_toggle_2")
+    async def toggle_2(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.state[2] = not self.state[2]
+        await self._edit(interaction)
+
+    @discord.ui.button(label="❌ Défi 3", style=discord.ButtonStyle.secondary, custom_id="defi_toggle_3")
+    async def toggle_3(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.state[3] = not self.state[3]
+        await self._edit(interaction)
+
+    @discord.ui.button(label="❌ Défi 4", style=discord.ButtonStyle.secondary, custom_id="defi_toggle_4")
+    async def toggle_4(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.state[4] = not self.state[4]
+        await self._edit(interaction)
+
+    @discord.ui.button(label="✅ VALIDER", style=discord.ButtonStyle.success)
+    async def commit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+
+        row_i2, row2 = domain.get_defis_row(self.s, self.code, self.wk_key)
+        if not row_i2:
+            return await interaction.followup.send(catify("❌ Ligne DEFIS introuvable. Relance."), ephemeral=True)
+
+        done_before = domain.defis_done_count(row2)
+        stamp = now_fr().strftime("%Y-%m-%d %H:%M:%S")
+
+        updates = []
+        for n in range(1, 5):
+            if self.state.get(n) and not str(row2.get(f"d{n}", "")).strip():
+                col = col_letter_for_defi(n)
+                updates.append({"range": f"{col}{row_i2}", "values": [[stamp]]})
+
+        if updates:
+            self.s.batch_update("DEFIS", updates)
+
+        row_i3, row3 = domain.get_defis_row(self.s, self.code, self.wk_key)
+        done_after = domain.defis_done_count(row3 or {})
+        awarded = False
+
+        if done_before == 0 and done_after > 0:
+            ok1, _ = domain.add_points_by_action(self.s, self.code, "BLEETER", 1, interaction.user.id, f"1er défi validé ({self.wk_key})", author_is_hg=True)
+            ok2, _ = domain.add_points_by_action(self.s, self.code, "DEFI_HEBDO", 1, interaction.user.id, f"1er défi validé ({self.wk_key})", author_is_hg=True)
+            awarded = bool(ok1 and ok2)
+
+        if done_after >= 4 and row3 and str(row3.get("completed_at", "")).strip() == "":
+            comp_stamp = now_fr().strftime("%Y-%m-%d %H:%M:%S")
+            self.s.batch_update("DEFIS", [
+                {"range": f"G{row_i3}", "values": [[comp_stamp]]},
+                {"range": f"H{row_i3}", "values": [[str(interaction.user.id)]]},
+            ])
+            domain.add_points_by_action(self.s, self.code, "TOUS_DEFIS_HEBDO", 1, interaction.user.id, f"4/4 défis complétés ({self.wk_key})", author_is_hg=True)
+
+        for item in self.children:
+            item.disabled = True
+
+        final_embed = self._build_embed()
+        extra = "🎁 Récompense donnée (1er défi de la semaine)." if awarded else "🧾 Récompense déjà prise cette semaine (ou aucune case nouvelle)."
+        final_embed.add_field(name="✅ Enregistré", value=f"Progression: **{done_after}/4**\n{extra}", inline=False)
+        final_embed.set_footer(text="Tampon posé. Mikasa referme le carnet. 🐾")
+
+        await interaction.message.edit(embed=final_embed, view=self)
+        await interaction.followup.send("✅ Défis enregistrés.", ephemeral=True)
+
+
+class Week12ChoiceButton(discord.ui.Button):
+    def __init__(self, idx: int):
+        super().__init__(label=f"❌ {idx+1}", style=discord.ButtonStyle.secondary, custom_id=f"w12_choice_{idx}")
+        self.idx = idx
+
+    async def callback(self, interaction: discord.Interaction):
+        view: DefiWeek12View = self.view  # type: ignore
+        if self.idx in view.selected:
+            view.selected.remove(self.idx)
+        else:
+            if view.selected_count() >= 4:
+                return await interaction.response.send_message(catify("😾 Max **4** choix en semaine 12."), ephemeral=True)
+            view.selected.add(self.idx)
+        await view._edit(interaction)
+
+
+class Week12ValidateButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="✅ VALIDER", style=discord.ButtonStyle.success, custom_id="w12_commit")
+
+    async def callback(self, interaction: discord.Interaction):
+        view: DefiWeek12View = self.view  # type: ignore
+        await view.commit_selected(interaction)
+
+
+class DefiWeek12View(discord.ui.View):
+    def __init__(self, *, author: discord.Member, services, code: str, wk: int, wk_key: str, wk_label: str,
+                 row_i: int, row: dict, choices: List[str], vip_pseudo: str):
+        super().__init__(timeout=180)
+        self.author = author
+        self.s = services
+        self.code = code
+        self.wk = wk
+        self.wk_key = wk_key
+        self.wk_label = wk_label
+        self.row_i = row_i
+        self.row = row
+        self.choices = choices
+        self.vip_pseudo = vip_pseudo
+
+        self.selected = set()
+
+        for i in range(12):
+            self.add_item(Week12ChoiceButton(i))
+        self.add_item(Week12ValidateButton())
+        self._refresh_all()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author.id:
+            await interaction.response.send_message(catify("😾 Pas touche. Lance ta propre commande."), ephemeral=True)
+            return False
+        return True
+
+    def selected_count(self) -> int:
+        return len(self.selected)
+
+    def _build_embed(self) -> discord.Embed:
+        start, end = domain.challenge_week_window()
+        done = domain.defis_done_count(self.row)
+        lines = []
+        for idx, txt in enumerate(self.choices):
+            mark = "✔️" if idx in self.selected else "❌"
+            lines.append(f"{mark} {txt}")
+
+        desc = (
+            f"👤 **{self.vip_pseudo}** • `{self.code}`\n"
+            f"📌 {self.wk_label} (Freestyle)\n"
+            f"🗓️ **{start.strftime('%d/%m %H:%M')} → {end.strftime('%d/%m %H:%M')}** (FR)\n\n"
+            f"✅ Slots déjà validés: **{done}/4**\n"
+            f"🧩 Sélection en cours: **{self.selected_count()}/4**\n\n"
+            + "\n".join(lines)
+            + "\n\nChoisis jusqu’à 4 défis, puis **VALIDER**."
+        )
+        embed = discord.Embed(title="🎭 Semaine 12 Freestyle (HG)", description=desc, color=discord.Color.purple())
+        embed.set_footer(text="Freestyle: Mikasa compte exactement 4 preuves. 🐾")
+        return embed
+
+    def _refresh_all(self):
+        for item in self.children:
+            if isinstance(item, Week12ChoiceButton):
+                idx = item.idx
+                item.label = f"{'✔️' if idx in self.selected else '❌'} {idx+1}"
+                item.disabled = (self.selected_count() >= 4 and idx not in self.selected)
+
+            if isinstance(item, Week12ValidateButton):
+                item.disabled = (self.selected_count() == 0)
+
+    async def _edit(self, interaction: discord.Interaction):
+        self._refresh_all()
+        await interaction.response.edit_message(embed=self._build_embed(), view=self)
+
+    async def commit_selected(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        row_i2, row2 = domain.get_defis_row(self.s, self.code, self.wk_key)
+        if not row_i2 or not row2:
+            return await interaction.followup.send(catify("❌ Ligne DEFIS introuvable."), ephemeral=True)
+
+        done_before = domain.defis_done_count(row2)
+        stamp = now_fr().strftime("%Y-%m-%d %H:%M:%S")
+
+        empty_slots = [n for n in range(1, 5) if not str(row2.get(f"d{n}", "")).strip()]
+        to_write = list(self.selected)[:len(empty_slots)]
+        updates = []
+        notes = str(row2.get("d_notes", "") or "").strip()
+
+        for k, choice_idx in enumerate(to_write):
+            slot_n = empty_slots[k]
+            col = col_letter_for_defi(slot_n)
+            updates.append({"range": f"{col}{row_i2}", "values": [[stamp]]})
+            picked_txt = self.choices[choice_idx]
+            notes = (notes + " | " if notes else "") + f"W12:{slot_n}:{picked_txt}"
+
+        if updates:
+            self.s.batch_update("DEFIS", updates)
+            self.s.update_cell_by_header("DEFIS", row_i2, "d_notes", notes)
+
+        row_i3, row3 = domain.get_defis_row(self.s, self.code, self.wk_key)
+        done_after = domain.defis_done_count(row3 or {})
+
+        awarded = False
+        if done_before == 0 and done_after > 0:
+            ok1, _ = domain.add_points_by_action(self.s, self.code, "BLEETER", 1, interaction.user.id, f"1er défi validé ({self.wk_key})", author_is_hg=True)
+            ok2, _ = domain.add_points_by_action(self.s, self.code, "DEFI_HEBDO", 1, interaction.user.id, f"1er défi validé ({self.wk_key})", author_is_hg=True)
+            awarded = bool(ok1 and ok2)
+
+        if done_after >= 4 and row3 and str(row3.get("completed_at", "")).strip() == "":
+            comp_stamp = now_fr().strftime("%Y-%m-%d %H:%M:%S")
+            self.s.batch_update("DEFIS", [
+                {"range": f"G{row_i3}", "values": [[comp_stamp]]},
+                {"range": f"H{row_i3}", "values": [[str(interaction.user.id)]]},
+            ])
+            domain.add_points_by_action(self.s, self.code, "TOUS_DEFIS_HEBDO", 1, interaction.user.id, f"4/4 défis complétés ({self.wk_key})", author_is_hg=True)
+
+        for item in self.children:
+            item.disabled = True
+
+        emb = self._build_embed()
+        extra = "🎁 Récompense donnée (1er défi de la semaine)." if awarded else "🧾 Récompense déjà prise cette semaine."
+        emb.add_field(name="✅ Enregistré", value=f"Progression: **{done_after}/4**\n{extra}", inline=False)
+        emb.set_footer(text="Freestyle enregistré. Mikasa range les preuves. 🐾")
+
+        await interaction.message.edit(embed=emb, view=self)
+        await interaction.followup.send("✅ Freestyle enregistré.", ephemeral=True)
 
 
 # ==========================================================
 # QCM
 # - FIXES IMPORTANTES:
-#   1) plus de build_qcm_embed cassée (indentation)
+#   1) build_qcm_embed cassée (indentation + variables)
 #   2) pas de double "interaction.response" (sinon crash "already responded")
-#   3) on édite le message via interaction.message.edit
+#   3) on édite le message via interaction.message.edit si besoin
 # ==========================================================
 class QcmDailyView(discord.ui.View):
-    def __init__(self, *, services, discord_id: int, code_vip: str, vip_pseudo: str, chrono_limit_sec: int = 16):
+    def __init__(self, *, services, discord_id: int, code_vip: str, vip_pseudo: str, chrono_limit_sec: int = 12):
         super().__init__(timeout=6 * 60)
         self.s = services
         self.discord_id = discord_id
@@ -442,7 +719,6 @@ class QcmDailyView(discord.ui.View):
 
         self.chrono_limit_sec = int(chrono_limit_sec)
 
-        # questions du jour
         self.questions = domain.qcm_pick_daily_set(self.s)
         self.date_key, self.answers = domain.qcm_today_progress(self.s, self.code_vip, self.discord_id)
 
@@ -459,7 +735,6 @@ class QcmDailyView(discord.ui.View):
 
     def _add_buttons(self):
         self.clear_items()
-
         if self.current_index >= len(self.questions):
             self.add_item(QcmCloseButton())
             return
@@ -481,7 +756,6 @@ class QcmDailyView(discord.ui.View):
             return e
 
         q = self.questions[self.current_index]
-
         e = discord.Embed(
             title=f"🧠 QCM Los Santos du {self.date_key}",
             description=(
@@ -505,7 +779,7 @@ class QcmDailyView(discord.ui.View):
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
     async def start_tick_15s(self, message: discord.Message):
-        # petit clin d’œil: edit après 1s (pas toutes les secondes)
+        # Clin d’œil visuel: on édite une fois après 1s, pas toutes les secondes
         try:
             await asyncio.sleep(1)
             if self.current_index >= len(self.questions):
@@ -518,7 +792,7 @@ class QcmDailyView(discord.ui.View):
         elapsed = int((now_fr() - self.sent_at).total_seconds())
         q = self.questions[self.current_index]
 
-        ok, mark, pts, correct = domain.qcm_submit_answer(
+        ok, mark, pts, is_correct = domain.qcm_submit_answer(
             self.s,
             discord_id=self.discord_id,
             code_vip=self.code_vip,
@@ -531,22 +805,22 @@ class QcmDailyView(discord.ui.View):
         if not ok:
             return await interaction.followup.send(f"😾 {mark}", ephemeral=True)
 
-        # feedback
         note = f"{mark} Réponse enregistrée."
         if elapsed > self.chrono_limit_sec:
             note += " ⏱️ Trop lent: **0 point**."
-        elif correct and pts > 0:
+        elif is_correct and pts > 0:
             note += f" ✅ **+{pts} pts**"
-        elif correct and pts == 0:
+        elif is_correct and pts == 0:
             note += " ✅ Correct mais **cap hebdo** atteint (0 point)."
         else:
             note += " 0 point."
 
-        # avancer + edit message
+        # avancer
         self.current_index += 1
         self._add_buttons()
         self.sent_at = now_fr()
 
+        # IMPORTANT: ici on édite le message sans re-répondre à l'interaction
         try:
             await interaction.message.edit(embed=self.build_embed(), view=self)
         except Exception:
@@ -563,16 +837,35 @@ class QcmAnswerButton(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction):
         view: QcmDailyView = self.view  # type: ignore
 
-        # verrouille instantanément côté UI
+        # lock visuel immédiat
         for item in view.children:
             if isinstance(item, discord.ui.Button):
                 item.disabled = True
 
-        # on ACK l'interaction (sinon Discord râle)
+        # ACK l'interaction en éditant (sinon Discord râle)
         await interaction.response.edit_message(embed=view.build_embed(), view=view)
 
-        # puis on traite via followups + message.edit
+        # puis logique (followup + edit message)
         await view.submit(interaction, self.choice)
+
+
+class QcmSession:
+    def __init__(self):
+        self.correct_pos_counts = [0, 0, 0, 0]  # A,B,C,D
+
+
+def shuffle_balanced(row, session: QcmSession, max_same=2):
+    # NOTE: build_shuffled_question_from_sheet doit exister chez toi, sinon supprime ce bloc
+    for _ in range(8):
+        q = build_shuffled_question_from_sheet(row)
+        idx = LETTERS.index(q["correct_letter"])
+        if session.correct_pos_counts[idx] < max_same:
+            session.correct_pos_counts[idx] += 1
+            return q
+
+    q = build_shuffled_question_from_sheet(row)
+    session.correct_pos_counts[LETTERS.index(q["correct_letter"])] += 1
+    return q
 
 
 class QcmCloseButton(discord.ui.Button):
@@ -583,6 +876,7 @@ class QcmCloseButton(discord.ui.Button):
         for item in self.view.children:
             item.disabled = True
         await interaction.response.edit_message(content="✅ QCM fermé.", embed=None, view=self.view)
+
 
 
 # ==========================================================
