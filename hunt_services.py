@@ -13,16 +13,287 @@ from services import SheetsService, PARIS_TZ, now_fr, now_iso, normalize_code, d
 import domain
 
 # ==========================================================
-# Tables Sheets (tu les as déjà dans ton Google Sheets)
+# Tables
 # ==========================================================
 T_PLAYERS = "HUNT_PLAYERS"
 T_DAILY = "HUNT_DAILY"
-T_WEEKLY = "HUNT_WEEKLY"
 T_KEYS = "HUNT_KEYS"
+T_WEEKLY = "HUNT_WEEKLY"
 T_LOG = "HUNT_LOG"
 T_ITEMS = "HUNT_ITEMS"
 T_BOSSES = "HUNT_BOSSES"
 T_REPUTATION = "HUNT_REPUTATION"
+
+# ==========================================================
+# HEADERS EXACTS (TES COLONNES)
+# ==========================================================
+H_PLAYERS = [
+    "discord_id", "code_vip", "pseudo", "is_employee",
+    "avatar_tag", "avatar_url",
+    "ally_tag", "ally_url",
+    "level", "xp", "xp_total",
+    "stats_hp", "stats_atk", "stats_def", "stats_per", "stats_cha", "stats_luck",
+    "hunt_dollars", "heat",
+    "jail_until", "last_daily_date",
+    "weekly_week_key", "weekly_wins",
+    "total_runs", "total_wins", "total_deaths",
+    "inventory_json",
+    "created_at", "updated_at"
+]
+
+H_DAILY = [
+    "date_key", "discord_id", "code_vip",
+    "started_at", "finished_at",
+    "status", "step",
+    "state_json", "result_summary",
+    "xp_earned", "dollars_earned",
+    "dmg_taken", "death_flag", "jail_flag"
+]
+
+H_KEYS = [
+    "week_key", "code_vip", "discord_id",
+    "key_type",
+    "claimed_at", "claimed_by",
+    "opened_at",
+    "open_item_id", "open_qty", "open_rarity"
+]
+
+H_WEEKLY = [
+    "week_key", "discord_id", "code_vip", "pseudo",
+    "score",
+    "good_runs", "wins", "deaths",
+    "boss_kills", "steals", "jail_count",
+    "earned_dollars", "earned_xp",
+    "bonus_claimed", "top_rank",
+    "updated_at"
+]
+
+H_LOG = ["timestamp", "discord_id", "code_vip", "kind", "message"]
+
+H_ITEMS = ["item_id", "name", "type", "rarity", "price", "power_json", "image_url", "description"]
+
+H_BOSSES = [
+    "boss_id", "name", "kind", "week_key", "phase",
+    "base_hp", "base_atk", "base_def",
+    "ai_profile",
+    "escape_rule_json",
+    "taunts_json",
+    "image_url", "image_url_alt",
+    "enabled"
+]
+
+H_REPUTATION = [
+    "discord_id", "code_vip", "pseudo",
+    "rep", "total_rep",
+    "rank_title",
+    "last_rep_date",
+    "streak_days",
+    "updated_at"
+]
+
+# ==========================================================
+# Settings / bypass testers
+# ==========================================================
+# Mets ici tes IDs Discord (ceux qui peuvent rejouer, ignorer prison/quotas, etc.)
+HUNT_TESTER_IDS: set[int] = set([
+    135114378981801984,
+])
+
+# Temps max prison = 12h, on garde ça ici comme constante
+MAX_JAIL_HOURS = 12
+
+# ==========================================================
+# JSON helpers
+# ==========================================================
+def json_loads_safe(s: str, default: Any) -> Any:
+    try:
+        if not s:
+            return default
+        return json.loads(s)
+    except Exception:
+        return default
+
+def json_dumps_safe(obj: Any) -> str:
+    try:
+        return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+    except Exception:
+        return "{}"
+
+
+# ==========================================================
+# Date helpers (jour + semaine)
+# ==========================================================
+def date_key_fr(dt: Optional[datetime] = None) -> str:
+    dt = (dt or now_fr()).astimezone(PARIS_TZ)
+    return dt.strftime("%Y-%m-%d")
+
+def week_key_fr(dt: Optional[datetime] = None) -> str:
+    # ISO week key, pratique pour weekly ranking
+    dt = (dt or now_fr()).astimezone(PARIS_TZ)
+    y, w, _ = dt.isocalendar()
+    return f"{y}-W{w:02d}"
+
+def parse_iso_or_empty(s: str) -> Optional[datetime]:
+    try:
+        if not s:
+            return None
+        # accepte "Z"
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(PARIS_TZ)
+    except Exception:
+        return None
+
+
+# ==========================================================
+# Generic sheet helpers
+# ==========================================================
+def _ensure_headers(sheets: SheetsService, title: str, expected_headers: List[str]) -> None:
+    hdr = sheets.headers(title)
+    # on compare en mode strict mais sans casser si l'utilisateur a plus de colonnes
+    missing = [h for h in expected_headers if h not in hdr]
+    if missing:
+        raise RuntimeError(
+            f"[{title}] Colonnes manquantes: {missing}\n"
+            f"👉 Mets exactement ces headers (au moins ceux-là) en ligne 1."
+        )
+
+def ensure_hunt_tables_ready(sheets: SheetsService) -> None:
+    _ensure_headers(sheets, T_PLAYERS, H_PLAYERS)
+    _ensure_headers(sheets, T_DAILY, H_DAILY)
+    _ensure_headers(sheets, T_KEYS, H_KEYS)
+    _ensure_headers(sheets, T_WEEKLY, H_WEEKLY)
+    _ensure_headers(sheets, T_LOG, H_LOG)
+    _ensure_headers(sheets, T_ITEMS, H_ITEMS)
+    _ensure_headers(sheets, T_BOSSES, H_BOSSES)
+    _ensure_headers(sheets, T_REPUTATION, H_REPUTATION)
+
+
+# ==========================================================
+# Player CRUD
+# ==========================================================
+def find_player_row(sheets: SheetsService, discord_id: int) -> Tuple[Optional[int], Optional[Dict[str, Any]]]:
+    rows = sheets.get_all_records(T_PLAYERS)
+    did = str(discord_id)
+    for idx, r in enumerate(rows, start=2):
+        if str(r.get("discord_id", "")).strip() == did:
+            return idx, r
+    return None, None
+
+def upsert_player(
+    sheets: SheetsService,
+    *,
+    discord_id: int,
+    code_vip: str,
+    pseudo: str,
+    is_employee: bool,
+) -> Tuple[int, Dict[str, Any]]:
+    row_i, row = find_player_row(sheets, discord_id)
+    now = now_iso()
+    code = normalize_code(code_vip)
+
+    if row_i and row:
+        # refresh “basics”
+        sheets.update_cell_by_header(T_PLAYERS, row_i, "code_vip", code)
+        sheets.update_cell_by_header(T_PLAYERS, row_i, "pseudo", display_name(pseudo))
+        sheets.update_cell_by_header(T_PLAYERS, row_i, "is_employee", "TRUE" if is_employee else "FALSE")
+        sheets.update_cell_by_header(T_PLAYERS, row_i, "updated_at", now)
+        # relis row
+        row_i2, row2 = find_player_row(sheets, discord_id)
+        return row_i2 or row_i, row2 or row
+
+    # create default stats
+    base = {
+        "discord_id": str(discord_id),
+        "code_vip": code,
+        "pseudo": display_name(pseudo),
+        "is_employee": "TRUE" if is_employee else "FALSE",
+        "avatar_tag": "",
+        "avatar_url": "",
+        "ally_tag": "",
+        "ally_url": "",
+        "level": 1,
+        "xp": 0,
+        "xp_total": 0,
+        "stats_hp": 30,
+        "stats_atk": 6,
+        "stats_def": 4,
+        "stats_per": 4,
+        "stats_cha": 4,
+        "stats_luck": 2,
+        "hunt_dollars": 0,
+        "heat": 0,
+        "jail_until": "",
+        "last_daily_date": "",
+        "weekly_week_key": "",
+        "weekly_wins": 0,
+        "total_runs": 0,
+        "total_wins": 0,
+        "total_deaths": 0,
+        "inventory_json": json_dumps_safe({"items": {}, "keys": 0}),
+        "created_at": now,
+        "updated_at": now,
+    }
+    sheets.append_by_headers(T_PLAYERS, base)
+    row_i2, row2 = find_player_row(sheets, discord_id)
+    if not row_i2 or not row2:
+        raise RuntimeError("Impossible de créer HUNT_PLAYERS (ligne non retrouvée).")
+    return row_i2, row2
+
+
+# ==========================================================
+# Jail + quotas
+# ==========================================================
+def is_tester(discord_id: int) -> bool:
+    return int(discord_id) in HUNT_TESTER_IDS
+
+def is_in_jail(player_row: Dict[str, Any]) -> Tuple[bool, Optional[datetime]]:
+    ju = str(player_row.get("jail_until", "")).strip()
+    dt = parse_iso_or_empty(ju)
+    if not dt:
+        return False, None
+    return (now_fr() < dt), dt
+
+def can_run_daily(player_row: Dict[str, Any], *, dt: Optional[datetime] = None) -> Tuple[bool, str]:
+    dt = dt or now_fr()
+    if is_tester(int(player_row.get("discord_id", "0") or 0)):
+        return True, ""
+
+    # prison
+    in_jail, until = is_in_jail(player_row)
+    if in_jail and until:
+        return False, f"⛓️ Tu es en prison jusqu’à **{until.strftime('%d/%m %H:%M')}** (FR)."
+
+    # quota daily
+    last = str(player_row.get("last_daily_date", "")).strip()
+    today = date_key_fr(dt)
+    if last == today:
+        return False, "😾 Tu as déjà fait ton /hunt daily aujourd’hui."
+    return True, ""
+
+
+# ==========================================================
+# Logging
+# ==========================================================
+def hunt_log(sheets: SheetsService, *, discord_id: int, code_vip: str, kind: str, message: str) -> None:
+    sheets.append_by_headers(T_LOG, {
+        "timestamp": now_iso(),
+        "discord_id": str(discord_id),
+        "code_vip": normalize_code(code_vip),
+        "kind": (kind or "INFO").strip().upper(),
+        "message": (message or "").strip(),
+    })
+
+
+# ==========================================================
+# Key helpers
+# ==========================================================
+def player_has_claimed_key_this_week(sheets: SheetsService, discord_id: int, week_key: str) -> bool:
+    rows = sheets.get_all_records(T_KEYS)
+    did = str(discord_id)
+    for r in rows:
+        if str(r.get("discord_id", "")).strip() == did and str(r.get("week_key", "")).strip() == week_key:
+            # Une ligne = une claim (même si pas ouverte)
+            return True
+    return False
 
 # ==========================================================
 # Helpers clés
