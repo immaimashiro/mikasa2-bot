@@ -49,6 +49,13 @@ ANNOUNCE_CHANNEL_ID = int(os.getenv("ANNOUNCE_CHANNEL_ID", "0"))
 
 VIP_TEMPLATE_PATH = os.getenv("VIP_TEMPLATE_PATH", "template.png")
 VIP_FONT_PATH = os.getenv("VIP_FONT_PATH", "PaybAck.ttf")
+HUNT_TESTER_IDS = set()
+_raw = (os.getenv("HUNT_TESTER_IDS") or "").strip()
+if _raw:
+    for part in _raw.replace(";", ",").split(","):
+        part = part.strip()
+        if part.isdigit():
+            HUNT_TESTER_IDS.add(int(part))
 
 # ----------------------------
 # Bot init (slash only = stable)
@@ -128,6 +135,9 @@ def _vip_label(r: dict) -> str:
 # ----------------------------
 # Perm checks
 # ----------------------------
+def is_hunt_tester(user_id: int) -> bool:
+    return user_id in HUNT_TESTER_IDS
+
 def has_role(member: discord.Member, role_id: int) -> bool:
     return role_id != 0 and any(r.id == role_id for r in getattr(member, "roles", []))
 
