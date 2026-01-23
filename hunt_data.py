@@ -26,7 +26,6 @@ def format_player_title(player_name: str, avatar_tag: str) -> str:
 
 DIRECTION_TAGS = ["MAI", "ROXY", "LYA", "ZACKO", "DRACO"]
 
-# Pour affichage (si tu veux joli dans l'UI)
 DIRECTION_LABELS = {
     "MAI": "Mai",
     "ROXY": "Roxy",
@@ -34,6 +33,10 @@ DIRECTION_LABELS = {
     "ZACKO": "Zacko",
     "DRACO": "Draco",
 }
+
+def avatar_label(tag: str) -> str:
+    tag = (tag or "").strip().upper()
+    return DIRECTION_LABELS.get(tag, tag or "Inconnu")
 
 def pick_random_avatar_tag() -> str:
     return random.choice(DIRECTION_TAGS)
@@ -48,9 +51,14 @@ def pick_direction_ally(exclude_tags: List[str]) -> str:
     - le perso du joueur
     - l'allié déjà actif
     """
-    pool = [t for t in DIRECTION_TAGS if t not in set([x.upper() for x in exclude_tags if x])]
+    ex = set()
+    for x in (exclude_tags or []):
+        x = (x or "").strip().upper()
+        if x:
+            ex.add(x)
+
+    pool = [t for t in DIRECTION_TAGS if t not in ex]
     if not pool:
-        # fallback: si tout exclu (rare), on autorise n'importe qui
         pool = DIRECTION_TAGS[:]
     return random.choice(pool)
 
@@ -78,7 +86,7 @@ ALLY_LINES = {
 }
 
 def ally_intro_line(tag: str) -> str:
-    tag = (tag or "").upper()
+    tag = (tag or "").upper().strip()
     arr = ALLY_LINES.get(tag) or ["Un allié surgit, silencieux."]
     return random.choice(arr)
 
@@ -115,7 +123,6 @@ ICONIC_CAMEOS = [
     "Michael (caméo)",
 ]
 
-# Baylife / RP perso
 BAYLIFE_NPCS = [
     "Shakir",
     "Luxus Dreyar",
@@ -135,19 +142,17 @@ ATTENIN_TAUNTS = [
 
 ATTENIN_FLEE_LINE_1 = "Attenin recule, essuie une goutte de sang, puis disparaît dans l’ombre."
 ATTENIN_FLEE_LINE_2 = "Attenin ricane, et au moment où tu frappes… elle n’est déjà plus là."
-
 ATTENIN_SAVE_LINE = "« Le SubUrban sera toujours de ton côté. »"
 
-# Combat 3: si victoire et le joueur veut tuer -> jet 50/50
 ATTENIN_EXEC_FAIL = "Tes mains tremblent. « Finalement… je ne peux pas l’achever… » Attenin s’échappe, blessée mais vivante."
 ATTENIN_EXEC_SUCCESS = "Le dernier coup part. Attenin s’effondre. Le silence dure une seconde. Mikasa laisse échapper un petit *prrr*."
 
 # ==========================================================
 # ÉCONOMIE / ITEMS / CLÉS
 # ==========================================================
-
-KEY_NORMAL = "KEY_NORMAL"
-KEY_GOLD = "KEY_GOLD"
+# NOTE: en Sheets (HUNT_KEYS.key_type), on utilisera plutôt "NORMAL" ou "GOLD"
+KEY_NORMAL = "NORMAL"
+KEY_GOLD = "GOLD"
 
 RARITY_COMMON = "COMMON"
 RARITY_RARE = "RARE"
@@ -163,7 +168,6 @@ class LootItem:
     expires_days: int = 0  # 0 = ne périme pas
     desc: str = ""
 
-# Exemples (tu pourras en ajouter ensuite, mais c’est une base solide)
 LOOT_POOL: List[LootItem] = [
     LootItem("BANDAGE", "Bandages", RARITY_COMMON, price_dollars=120, desc="Soigne un peu. Simple, efficace."),
     LootItem("MEDKIT", "Kit de soin", RARITY_RARE, price_dollars=420, desc="Soigne beaucoup. Tu respires mieux."),
@@ -174,11 +178,11 @@ LOOT_POOL: List[LootItem] = [
 ]
 
 def _weighted_choice(items: List[Tuple[str, int]]) -> str:
-    total = sum(w for _, w in items)
+    total = sum(int(w) for _, w in items)
     r = random.randint(1, max(1, total))
     upto = 0
     for v, w in items:
-        upto += w
+        upto += int(w)
         if r <= upto:
             return v
     return items[-1][0]
@@ -187,16 +191,14 @@ def roll_key_rarity(key_type: str) -> str:
     """
     Clé or = meilleures chances.
     """
-    key_type = (key_type or "").upper()
-    if key_type == KEY_GOLD:
-        # Gold: + légendaire
+    kt = (key_type or "").upper().strip()
+    if kt == KEY_GOLD:
         return _weighted_choice([
             (RARITY_COMMON, 30),
             (RARITY_RARE, 35),
             (RARITY_EPIC, 25),
             (RARITY_LEGENDARY, 10),
         ])
-    # Normal
     return _weighted_choice([
         (RARITY_COMMON, 55),
         (RARITY_RARE, 30),
@@ -205,13 +207,14 @@ def roll_key_rarity(key_type: str) -> str:
     ])
 
 def roll_loot_from_rarity(rarity: str) -> LootItem:
+    rarity = (rarity or "").upper().strip()
     pool = [x for x in LOOT_POOL if x.rarity == rarity]
     if not pool:
         pool = [x for x in LOOT_POOL if x.rarity == RARITY_COMMON] or LOOT_POOL[:]
     return random.choice(pool)
 
 # ==========================================================
-# JETS JOURNALIERS (proposition)
+# JETS JOURNALIERS
 # ==========================================================
 
 DAILY_ROLL_TYPES = [
@@ -225,25 +228,20 @@ DAILY_ROLL_TYPES = [
 def build_daily_roll_menu(is_employee: bool) -> List[str]:
     """
     Retourne une liste de types de jets proposés aujourd'hui.
-    Si employé: 50% chance d'inclure le Jet Direction.
-    (On ne donne pas "mieux" à 100%, on donne "plus souvent".)
+    Base: 3 jets parmi [COMBAT, EXPLO, SURVIE, CHANCE]
+    Employé: +50% chance d'ajouter "DIRECTION" (bonus).
     """
     base = ["COMBAT", "EXPLO", "SURVIE", "CHANCE"]
-
-    # On prend 3 jets au hasard dans les 4 de base
     picks = random.sample(base, k=3)
 
     if is_employee and random.random() < 0.50:
-        # remplace un jet par direction, ou ajoute si tu préfères
-        # ici: on ajoute pour que l’employé ait une option bonus
         picks.append("DIRECTION")
 
     return picks
 
 def roll_direction_bonus_event() -> bool:
     """
-    Bonus interne pour le Jet de la Direction:
-    ex: chance de rencontrer un allié, loot amélioré, etc.
-    Tu ajusteras dans hunt_domain.py.
+    Bonus interne pour le Jet de la Direction.
+    Ex: chance de rencontrer un allié, loot amélioré, etc.
     """
     return random.random() < 0.50
