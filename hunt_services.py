@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 import json
 from __future__ import annotations
-
+import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timedelta, timezone
@@ -645,3 +645,102 @@ def compute_sentence_hours(crime: str, heat: int, roll: int):
 
     hours = base * mult
     return min(12.0, max(0.25, hours))
+
+# ---------- Testers ----------
+def tester_ids() -> set[int]:
+    raw = (os.getenv("HUNT_TESTER_IDS") or "").strip()
+    if not raw:
+        return set()
+    out = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if part.isdigit():
+            out.add(int(part))
+    return out
+
+def is_tester(discord_id: int) -> bool:
+    return discord_id in tester_ids()
+
+# ---------- Week key ----------
+def hunt_week_key(now: Optional[datetime] = None) -> str:
+    # même fenêtre que tes défis (vendredi 17h -> vendredi 17h)
+    start, _ = challenge_week_window(now or now_fr())
+    return start.astimezone(PARIS_TZ).strftime("HUNT_%Y_W%W")
+
+def today_key(now: Optional[datetime] = None) -> str:
+    now = (now or now_fr()).astimezone(PARIS_TZ)
+    return now.strftime("%Y-%m-%d")
+
+# ---------- Inventory helpers ----------
+def inv_load(raw: str) -> Dict[str, int]:
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            return {str(k): int(v) for k, v in data.items()}
+    except Exception:
+        pass
+    return {}
+
+def inv_dump(inv: Dict[str, int]) -> str:
+    safe = {k: int(v) for k, v in inv.items() if int(v) > 0}
+    return json.dumps(safe, ensure_ascii=False)
+
+def inv_add(inv: Dict[str, int], item_id: str, qty: int = 1) -> None:
+    inv[item_id] = int(inv.get(item_id, 0)) + int(qty)
+    if inv[item_id] <= 0:
+        inv.pop(item_id, None)
+
+# ---------- Loot table ----------
+# item_id => (label, rarity, type)
+LOOT_ITEMS: Dict[str, Dict[str, Any]] = {
+    "bandage": {"label": "Bandage", "rarity": "COMMON", "kind": "heal"},
+    "medkit": {"label": "Kit de soin", "rarity": "UNCOMMON", "kind": "heal"},
+    "pistol": {"label": "Pistolet", "rarity": "UNCOMMON", "kind": "weapon"},
+    "smg": {"label": "SMG", "rarity": "RARE", "kind": "weapon"},
+    "batte": {"label": "Batte", "rarity": "COMMON", "kind": "weapon"},
+    "couteau": {"label": "Couteau", "rarity": "COMMON", "kind": "weapon"},
+    "lucille": {"label": "Lucille", "rarity": "LEGENDARY", "kind": "weapon"},
+    "jail_card": {"label": "Carte de sortie de prison", "rarity": "RARE", "kind": "utility"},
+    "key": {"label": "Clé", "rarity": "SPECIAL", "kind": "key"},
+    "gold_key": {"label": "Clé en or", "rarity": "SPECIAL", "kind": "key"},
+}
+
+def roll_loot(*, gold_bonus: bool = False) -> List[Tuple[str, int]]:
+    """
+    Retourne une liste (item_id, qty).
+    - gold_bonus augmente la proba rare/légendaire
+    """
+    r = random.random()
+
+    # table simple, ajustable
+    # base: 60% bandage, 20% batte/couteau, 12% pistol/medkit, 7% smg, 1% lucille
+    # gold: pousse un peu vers le haut
+    if gold_bonus:
+        if r < 0.50:
+            return [("bandage", 1)]
+        if r < 0.70:
+            return [(random.choice(["batte", "couteau"]), 1)]
+        if r < 0.88:
+            return [(random.choice(["pistol", "medkit"]), 1)]
+        if r < 0.985:
+            return [("smg", 1)]
+        return [("lucille", 1)]
+
+    if r < 0.60:
+        return [("bandage", 1)]
+    if r < 0.80:
+        return [(random.choice(["batte", "couteau"]), 1)]
+    if r < 0.92:
+        return [(random.choice(["pistol", "medkit"]), 1)]
+    if r < 0.99:
+        return [("smg", 1)]
+    return [("lucille", 1)]
+
+def money_reward() -> int:
+    # petit filet d’argent quasi tout le temps
+    return random.randint(15, 45)
+
+def xp_reward() -> int:
+    return random.randint(8, 20)
