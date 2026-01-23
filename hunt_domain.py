@@ -2,7 +2,157 @@
 # -*- coding: utf-8 -*-
 
 from __future__ import annotations
-import random
+from typing import Any, Dict, Optional, Tuple
+from datetime import datetime, timedelta
+
+import hunt_services as hs
+from services import now_fr, now_iso, normalize_code, display_name
+
+# Avatars direction (tags + urls = tu mettras tes liens d’images)
+DIRECTION_AVATARS = [
+    {"tag": "MAI",   "label": "Mai",   "url": "https://github.com/immaimashiro/mikasa2-bot/blob/6cc14e1332d0ffdc2a305ba9d4cab67de3ea2140/Mai.png"},   # <- mets tes URLs
+    {"tag": "ROXY",  "label": "Roxy",  "url": "https://github.com/immaimashiro/mikasa2-bot/blob/6cc14e1332d0ffdc2a305ba9d4cab67de3ea2140/Roxy.png"},
+    {"tag": "LYA",   "label": "Lya",   "url": "https://github.com/immaimashiro/mikasa2-bot/blob/6cc14e1332d0ffdc2a305ba9d4cab67de3ea2140/Lya.png"},
+    {"tag": "ZACKO", "label": "Zacko", "url": "https://github.com/immaimashiro/mikasa2-bot/blob/6cc14e1332d0ffdc2a305ba9d4cab67de3ea2140/Zacko.png"},
+    {"tag": "DRACO", "label": "Draco", "url": "https://github.com/immaimashiro/mikasa2-bot/blob/6cc14e1332d0ffdc2a305ba9d4cab67de3ea2140/Draco.png"},
+]
+
+def direction_by_tag(tag: str) -> Optional[Dict[str, Any]]:
+    t = (tag or "").strip().upper()
+    for a in DIRECTION_AVATARS:
+        if a["tag"] == t:
+            return a
+    return None
+
+# ----------------------------
+# PLAYERS
+# ----------------------------
+def get_player_row(sheets, discord_id: int) -> Tuple[Optional[int], Optional[Dict[str, Any]]]:
+    rows = sheets.get_all_records(hs.T_PLAYERS)
+    for idx, r in enumerate(rows, start=2):
+        if str(r.get("discord_id", "")).strip() == str(discord_id):
+            return idx, r
+    return None, None
+
+def ensure_player(
+    sheets,
+    *,
+    discord_id: int,
+    vip_code: str,
+    pseudo: str,
+    is_employee: bool
+) -> Tuple[int, Dict[str, Any]]:
+    row_i, row = get_player_row(sheets, discord_id)
+    if row_i and row:
+        # refresh champs “vivants”
+        sheets.update_cell_by_header(hs.T_PLAYERS, row_i, "vip_code", normalize_code(vip_code))
+        sheets.update_cell_by_header(hs.T_PLAYERS, row_i, "pseudo", display_name(pseudo))
+        sheets.update_cell_by_header(hs.T_PLAYERS, row_i, "is_employee", "1" if is_employee else "0")
+        sheets.update_cell_by_header(hs.T_PLAYERS, row_i, "updated_at", now_iso())
+        return row_i, row
+
+    sheets.append_by_headers(hs.T_PLAYERS, {
+        "discord_id": str(discord_id),
+        "vip_code": normalize_code(vip_code),
+        "pseudo": display_name(pseudo),
+        "is_employee": "1" if is_employee else "0",
+        "avatar_tag": "",
+        "avatar_url": "",
+        "ally_tag": "",
+        "ally_url": "",
+        "level": 1,
+        "xp": 0,
+        "xp_total": 0,
+        "stats_hp": 100,
+        "stats_atk": 10,
+        "stats_def": 8,
+        "stats_luck": 5,
+        "hunt_dollars": 0,
+        "inventory_json": "",
+        "jail_until": "",
+        "last_daily_date": "",
+        "weekly_week_key": "",
+        "weekly_wins": 0,
+        "total_runs": 0,
+        "total_deaths": 0,
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+    })
+    row_i2, row2 = get_player_row(sheets, discord_id)
+    if not row_i2 or not row2:
+        raise RuntimeError("Impossible de créer le player.")
+    return row_i2, row2
+
+def set_avatar(sheets, discord_id: int, avatar_tag: str, avatar_url: str):
+    row_i, row = get_player_row(sheets, discord_id)
+    if not row_i:
+        return False, "Player introuvable."
+    sheets.update_cell_by_header(hs.T_PLAYERS, row_i, "avatar_tag", avatar_tag)
+    sheets.update_cell_by_header(hs.T_PLAYERS, row_i, "avatar_url", avatar_url)
+    sheets.update_cell_by_header(hs.T_PLAYERS, row_i, "updated_at", now_iso())
+    return True, ""
+
+# ----------------------------
+# PRISON
+# ----------------------------
+def jail_until_dt(raw: str) -> Optional[datetime]:
+    if not raw:
+        return None
+    try:
+        # stored as ISO UTC
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+def is_in_jail(player: Dict[str, Any]) -> Tuple[bool, Optional[datetime]]:
+    dt = jail_until_dt(str(player.get("jail_until", "")).strip())
+    if not dt:
+        return False, None
+    return (datetime.now(tz=dt.tzinfo) < dt), dt
+
+def apply_jail(sheets, row_i: int, hours: int):
+    hours = max(1, min(12, int(hours)))
+    until = datetime.now(tz=timedelta(0)) + timedelta(hours=hours)  # UTC-ish
+    sheets.update_cell_by_header(hs.T_PLAYERS, row_i, "jail_until", until.isoformat(timespec="seconds"))
+
+# ----------------------------
+# DAILY
+# ----------------------------
+def daily_exists(sheets, discord_id: int, date_key: str) -> bool:
+    rows = sheets.get_all_records(hs.T_DAILY)
+    for r in rows:
+        if str(r.get("discord_id", "")).strip() == str(discord_id) and str(r.get("date_key", "")).strip() == date_key:
+            return True
+    return False
+
+def append_daily(
+    sheets,
+    *,
+    date_key: str,
+    discord_id: int,
+    vip_code: str,
+    result: str,
+    story: str,
+    rolls: str,
+    rewards_json: str,
+    money_delta: int,
+    xp_delta: int,
+    jail_delta_hours: int
+):
+    sheets.append_by_headers(hs.T_DAILY, {
+        "date_key": date_key,
+        "discord_id": str(discord_id),
+        "vip_code": normalize_code(vip_code),
+        "result": result,
+        "story": story,
+        "rolls": rolls,
+        "rewards_json": rewards_json,
+        "money_delta": int(money_delta),
+        "xp_delta": int(xp_delta),
+        "jail_delta_hours": int(jail_delta_hours),
+        "created_at": now_iso(),
+    })
+
 
 LOOT_TABLE = {
     "NORMAL": [
