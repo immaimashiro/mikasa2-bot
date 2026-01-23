@@ -12,7 +12,7 @@ import discord
 from discord import ui
 
 import hunt_services
-from services import now_iso, now_fr, PARIS_TZ, display_name
+from services import now_iso, now_fr, PARIS_TZ, display_name, catify
 
 
 # ==========================================================
@@ -47,6 +47,93 @@ def _safe_int(x: Any, default: int = 0) -> int:
 
 def _now_fr_str() -> str:
     return now_fr().astimezone(PARIS_TZ).strftime("%d/%m %H:%M")
+
+
+# Tu remplaceras les URLs par tes liens S3 quand tu les upload
+AVATARS: List[Tuple[str, str, str]] = [
+    ("MAI",   "Mai",   ""),  # (tag, label, image_url)
+    ("ROXY",  "Roxy",  ""),
+    ("LYA",   "Lya",   ""),
+    ("ZACKO", "Zacko", ""),
+    ("DRACO", "Draco", ""),
+]
+
+
+class HuntAvatarView(ui.View):
+    def __init__(self, *, services, discord_id: int, code_vip: str, pseudo: str, is_employee: bool):
+        super().__init__(timeout=None)  # ✅ pas de timeout
+        self.s = services
+        self.discord_id = discord_id
+        self.code_vip = code_vip
+        self.pseudo = pseudo
+        self.is_employee = bool(is_employee)
+
+        self.add_item(HuntAvatarSelect(self))
+        self.add_item(HuntAvatarCloseButton())
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.discord_id:
+            await interaction.response.send_message(catify("😾 Pas touche. Lance ton propre /hunt avatar."), ephemeral=True)
+            return False
+        return True
+
+    def build_embed(self) -> discord.Embed:
+        e = discord.Embed(
+            title="🎭 Choix du personnage",
+            description=(
+                f"👤 **{self.pseudo}** • `{self.code_vip}`\n\n"
+                "Choisis ton personnage de la direction SubUrban.\n"
+                "Ton nom s’affichera ensuite comme :\n"
+                f"**{self.pseudo} [MAI]** (exemple)\n\n"
+                "✅ Aucun chrono ici, prends ton temps."
+            ),
+            color=discord.Color.dark_purple()
+        )
+        e.set_footer(text="Mikasa sort les fiches perso. 🐾")
+        return e
+
+
+class HuntAvatarSelect(ui.Select):
+    def __init__(self, view: HuntAvatarView):
+        options = []
+        for tag, label, _url in AVATARS:
+            options.append(discord.SelectOption(label=label, value=tag, description=f"Choisir {label}"))
+
+        super().__init__(
+            placeholder="Choisir un personnage…",
+            options=options,
+            min_values=1,
+            max_values=1
+        )
+        self.v = view
+
+    async def callback(self, interaction: discord.Interaction):
+        tag = self.values[0]
+        url = next((u for (t, _lab, u) in AVATARS if t == tag), "")
+
+        hunt_services.set_avatar(self.v.s, discord_id=self.v.discord_id, avatar_tag=tag, avatar_url=url)
+
+        # petit feedback + update embed avec thumbnail si dispo
+        e = discord.Embed(
+            title="✅ Avatar choisi",
+            description=f"Tu joueras désormais en **[{tag}]**.\nNom affiché: **{self.v.pseudo} [{tag}]**",
+            color=discord.Color.green()
+        )
+        if url:
+            e.set_thumbnail(url=url)
+        e.set_footer(text="Mikasa note ça dans le registre. 🐾")
+
+        await interaction.response.edit_message(embed=e, view=self.v)
+
+
+class HuntAvatarCloseButton(ui.Button):
+    def __init__(self):
+        super().__init__(label="✅ Fermer", style=discord.ButtonStyle.success)
+
+    async def callback(self, interaction: discord.Interaction):
+        for item in self.view.children:
+            item.disabled = True
+        await interaction.response.edit_message(content="✅ Panneau fermé.", embed=None, view=self.view)
 
 
 # ==========================================================
