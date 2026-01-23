@@ -72,10 +72,8 @@ bot.tree.add_command(vip_group)
 bot.tree.add_command(defi_group)
 bot.tree.add_command(cave_group)
 
-hunt_group = app_commands.Group(name="hunt", description="RPG Hunt (VIP)")
 hunt_key_group = app_commands.Group(name="key", description="Gestion des clés Hunt (HG)", parent=hunt_group)
 vip_log_group = app_commands.Group(name="log", description="Logs VIP", parent=vip_group)
-bot.tree.add_command(hunt_group)
 
 # ----------------------------
 # VIP autocomplete cache
@@ -163,7 +161,18 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         await reply_ephemeral(interaction, msg)
     except Exception:
         pass
-        
+
+def safe_add_group(group: app_commands.Group):
+    """
+    Ajoute un groupe à bot.tree seulement s'il n'existe pas déjà.
+    """
+    existing = bot.tree.get_command(group.name)
+    if existing is not None:
+        print(f"[SKIP] Group déjà enregistré: /{group.name}")
+        return existing
+    bot.tree.add_command(group)
+    return group
+
 def safe_tree_command(name: str, description: str):
     """
     Décorateur qui n'ajoute la commande que si elle n'existe pas déjà dans bot.tree.
