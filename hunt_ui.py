@@ -13,7 +13,7 @@ from discord import ui
 
 import hunt_services
 from services import now_iso, now_fr, PARIS_TZ, display_name, catify
-import hunt_domain
+import hunt_domain as hd
 
 # ==========================================================
 # Mini "moteur" de rencontre
@@ -58,6 +58,67 @@ AVATARS = [
     ("DRACO", "Draco", "https://github.com/immaimashiro/mikasa2-bot/blob/6cc14e1332d0ffdc2a305ba9d4cab67de3ea2140/Draco.png"),
 ]
 
+class HuntAvatarView(ui.View):
+    def __init__(self, *, author_id: int):
+        super().__init__(timeout=None)
+        self.author_id = author_id
+        self.selected_tag = None
+
+        self.add_item(HuntAvatarSelect(self))
+        self.add_item(HuntAvatarConfirmButton(self))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("😾 Pas touche. Ouvre ton propre /hunt avatar.", ephemeral=True)
+            return False
+        return True
+
+class HuntAvatarSelect(ui.Select):
+    def __init__(self, view: HuntAvatarView):
+        options = []
+        for a in hd.DIRECTION_AVATARS:
+            options.append(discord.SelectOption(label=a["label"], value=a["tag"], description=f"[{a['tag']}]"))
+        super().__init__(
+            placeholder="Choisis ton personnage (direction SubUrban)…",
+            options=options,
+            min_values=1,
+            max_values=1,
+        )
+        self.v = view
+
+    async def callback(self, interaction: discord.Interaction):
+        self.v.selected_tag = self.values[0]
+        await interaction.response.defer(ephemeral=True)
+
+class HuntAvatarConfirmButton(ui.Button):
+    def __init__(self, view: HuntAvatarView):
+        super().__init__(label="✅ Confirmer", style=discord.ButtonStyle.success)
+        self.v = view
+
+    async def callback(self, interaction: discord.Interaction):
+        if not self.v.selected_tag:
+            return await interaction.response.send_message("Choisis un avatar d’abord 🙂", ephemeral=True)
+
+        a = hd.direction_by_tag(self.v.selected_tag)
+        if not a:
+            return await interaction.response.send_message("Avatar invalide.", ephemeral=True)
+
+        ok, msg = hd.set_avatar(self.v.sheets, self.v.discord_id, a["tag"], a["url"])
+        if not ok:
+            return await interaction.response.send_message(f"❌ {msg}", ephemeral=True)
+
+        # disable UI
+        for item in self.v.children:
+            item.disabled = True
+        await interaction.message.edit(view=self.v)
+
+        # public announce
+        try:
+            await interaction.channel.send(f"🎭 {interaction.user.mention} a choisi **[{a['tag']}]**")
+        except Exception:
+            pass
+
+        await interaction.followup.send(f"✅ Avatar choisi: **[{a['tag']}]**", ephemeral=True)
 
 class HuntAvatarView(ui.View):
     def __init__(self, *, services, discord_id: int, code_vip: str, pseudo: str, is_employee: bool):
@@ -954,6 +1015,17 @@ class HuntFinishNpcButton(ui.Button):
         view.state["turn"] = int(view.state.get("turn", 1)) + 1
         save_state_to_daily(view.s, discord_id=interaction.user.id, state=view.state, result="RUNNING")
         await view.refresh(interaction)
+
+class HuntAvatarView(ui.View):
+    def __init__(self, *, author_id: int, sheets, discord_id: int):
+        super().__init__(timeout=None)
+        self.author_id = author_id
+        self.sheets = sheets
+        self.discord_id = discord_id
+        self.selected_tag: str | None = None
+
+        self.add_item(HuntAvatarSelect(self))
+        self.add_item(HuntAvatarConfirmButton(self))
 
 # ==========================================================
 # Fonction utilitaire appelée par bot.py
