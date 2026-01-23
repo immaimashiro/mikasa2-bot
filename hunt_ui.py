@@ -50,12 +50,12 @@ def _now_fr_str() -> str:
 
 
 # Tu remplaceras les URLs par tes liens S3 quand tu les upload
-AVATARS: List[Tuple[str, str, str]] = [
-    ("MAI",   "Mai",   ""),  # (tag, label, image_url)
-    ("ROXY",  "Roxy",  ""),
-    ("LYA",   "Lya",   ""),
-    ("ZACKO", "Zacko", ""),
-    ("DRACO", "Draco", ""),
+AVATARS = [
+    ("MAI",   "Mai",   "https://github.com/immaimashiro/mikasa2-bot/blob/6cc14e1332d0ffdc2a305ba9d4cab67de3ea2140/Mai.png"),
+    ("ROXY",  "Roxy",  "https://github.com/immaimashiro/mikasa2-bot/blob/6cc14e1332d0ffdc2a305ba9d4cab67de3ea2140/Roxy.png"),
+    ("LYA",   "Lya",   "https://github.com/immaimashiro/mikasa2-bot/blob/6cc14e1332d0ffdc2a305ba9d4cab67de3ea2140/Lya.png"),
+    ("ZACKO", "Zacko", "https://github.com/immaimashiro/mikasa2-bot/blob/6cc14e1332d0ffdc2a305ba9d4cab67de3ea2140/Zacko.png"),
+    ("DRACO", "Draco", "https://github.com/immaimashiro/mikasa2-bot/blob/6cc14e1332d0ffdc2a305ba9d4cab67de3ea2140/Draco.png"),
 ]
 
 
@@ -113,7 +113,21 @@ class HuntAvatarSelect(ui.Select):
 
         hunt_services.set_avatar(self.v.s, discord_id=self.v.discord_id, avatar_tag=tag, avatar_url=url)
 
-        # petit feedback + update embed avec thumbnail si dispo
+        # ✅ PUBLIC: annonce dans le salon
+        try:
+            public = discord.Embed(
+                    title="🎭 Nouveau personnage Hunt",
+                description=f"**{interaction.user.display_name}** a choisi **[{tag}]** !",
+                color=discord.Color.gold()
+            )
+            if url:
+                public.set_thumbnail(url=url)
+            public.set_footer(text="Mikasa griffonne le choix dans le registre. 🐾")
+            await interaction.channel.send(embed=public)
+        except Exception:
+            pass
+
+        # privé: confirmation + thumbnail
         e = discord.Embed(
             title="✅ Avatar choisi",
             description=f"Tu joueras désormais en **[{tag}]**.\nNom affiché: **{self.v.pseudo} [{tag}]**",
@@ -121,9 +135,10 @@ class HuntAvatarSelect(ui.Select):
         )
         if url:
             e.set_thumbnail(url=url)
-        e.set_footer(text="Mikasa note ça dans le registre. 🐾")
+        e.set_footer(text="Mikasa note ça proprement. 🐾")
 
         await interaction.response.edit_message(embed=e, view=self.v)
+
 
 
 class HuntAvatarCloseButton(ui.Button):
