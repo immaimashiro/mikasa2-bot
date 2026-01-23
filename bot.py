@@ -1,6 +1,6 @@
 # bot.py
 # -*- coding: utf-8 -*-
-
+import json
 import os
 import io
 import traceback
@@ -202,6 +202,76 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         pass
 
 
+
+@safe_group_command(hunt_group, name="daily", description="Lancer ta quête quotidienne Hunt.")
+async def hunt_daily(interaction: discord.Interaction):
+    await defer_ephemeral(interaction)
+
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return await interaction.followup.send("❌ À utiliser sur le serveur.", ephemeral=True)
+
+    # VIP lié ?
+    row_i, vip = domain.find_vip_row_by_discord_id(sheets, interaction.user.id)
+    if not row_i or not vip:
+        return await interaction.followup.send("😾 Ton Discord n’est pas lié à un VIP.", ephemeral=True)
+
+    code = normalize_code(str(vip.get("code_vip","")))
+    pseudo = display_name(vip.get("pseudo", code))
+    is_emp = is_employee(interaction.user)
+
+    # profil hunt
+    player_row_i, player = hunt_services.ensure_hunt_player(
+        sheets,
+        discord_id=interaction.user.id,
+        code_vip=code,
+        pseudo=pseudo,
+        is_employee=is_emp,
+    )
+
+    # prison check (sauf testers)
+    tester = is_hunt_tester(interaction.user.id)
+    jail_until = str(player.get("jail_until","") or "").strip()
+    if jail_until and not tester:
+        dt = services.parse_iso_dt(jail_until)
+        if dt and dt > services.now_fr():
+            return await interaction.followup.send(f"🚔 Tu es en prison jusqu’à: `{dt.strftime('%d/%m %H:%M')}`.", ephemeral=True)
+
+    today = hunt_services._today_key()
+
+    # déjà fait aujourd'hui ?
+    last = str(player.get("last_daily_date","") or "").strip()
+    if last == today and not tester:
+        # si la daily existe on laisse reprendre, sinon on bloque
+        di, dr = hunt_services._find_daily_row(sheets, interaction.user.id, today)
+        if not di:
+            return await interaction.followup.send("😾 Daily déjà faite aujourd’hui.", ephemeral=True)
+
+    daily_row_i, daily_row = hunt_services.ensure_daily(
+        sheets,
+        discord_id=interaction.user.id,
+        code_vip=code,
+        date_key=today,
+    )
+
+    # si DONE et pas tester => bloque
+    status = str(daily_row.get("status","RUNNING") or "").strip().upper()
+    if status == "DONE" and not tester:
+        return await interaction.followup.send("✅ Tu as déjà terminé ta daily aujourd’hui.", ephemeral=True)
+
+    view = hunt_ui.HuntDailyView(
+        services=sheets,
+        discord_id=interaction.user.id,
+        code_vip=code,
+        player_row_i=player_row_i,
+        player=player,
+        daily_row_i=daily_row_i,
+        daily_row=daily_row,
+        tester_bypass=tester,
+    )
+
+    await interaction.followup.send(embed=view.build_embed(), view=view, ephemeral=True)
+
+
 @safe_group_command(hunt_group, name="avatar", description="Choisir ton personnage (direction SubUrban).")
 async def hunt_avatar(interaction: discord.Interaction):
     await defer_ephemeral(interaction)
@@ -241,6 +311,71 @@ async def hunt_avatar(interaction: discord.Interaction):
         view=view,
         ephemeral=True
     )
+
+@safe_group_command(hunt_group, name="key", description="Gestion des clés Hunt (staff).")
+@staff_check()
+async def hunt_key_group(interaction: discord.Interaction):
+    # groupe placeholder si tu veux des sous-commandes, sinon supprime
+    await reply_ephemeral(interaction, "Utilise `/hunt key_claim <VIP_ID>`.")
+
+@safe_group_command(hunt_group, name="key_claim", description="Attribuer une clé hebdo à un VIP (staff).")
+@staff_check()
+@app_commands.describe(vip_id="Code VIP (SUB-XXXX-XXXX)")
+async def hunt_key_claim(interaction: discord.Interaction, vip_id: str):
+    await defer_ephemeral(interaction)
+
+    vip_id = normalize_code(vip_id)
+    row_i, vip = domain.find_vip_row_by_code(sheets, vip_id)
+    if not row_i or not vip:
+        return await interaction.followup.send("❌ VIP introuvable.", ephemeral=True)
+
+    did = str(vip.get("discord_id","") or "").strip()
+    if not did.isdigit():
+        return await interaction.followup.send("😾 Ce VIP n’est pas lié à un discord_id.", ephemeral=True)
+
+    discord_id = int(did)
+    pseudo = display_name(vip.get("pseudo", vip_id))
+
+    # on essaie de détecter employé via le serveur
+    key_type = "NORMAL"
+    try:
+        member = interaction.guild.get_member(discord_id)
+        if member and is_employee(member):
+            key_type = "GOLD"
+    except Exception:
+        pass
+
+    # assure player
+    hunt_services.ensure_hunt_player(
+        sheets,
+        discord_id=discord_id,
+        code_vip=vip_id,
+        pseudo=pseudo,
+        is_employee=(key_type == "GOLD"),
+    )
+
+    ok, msg = hunt_services.claim_weekly_key(
+        sheets,
+        code_vip=vip_id,
+        discord_id=discord_id,
+        claimed_by=interaction.user.id,
+        key_type=key_type,
+    )
+    if not ok:
+        return await interaction.followup.send(msg, ephemeral=True)
+
+    # annonce publique
+    try:
+        emb = discord.Embed(
+            title="🗝️ Clé Hunt attribuée",
+            description=f"Une clé **{key_type}** a été donnée à **{pseudo}** (`{vip_id}`).\n😼 Mikasa claque le cadenas. *clac* 🐾",
+            color=discord.Color.gold()
+        )
+        await interaction.channel.send(embed=emb)
+    except Exception:
+        pass
+
+    await interaction.followup.send(msg, ephemeral=True)
 
 
 def safe_tree_command(name: str, description: str):
