@@ -61,7 +61,6 @@ s3 = S3Service()
 
 scheduler = AsyncIOScheduler(timezone=services.PARIS_TZ)
 
-hunt_group = app_commands.Group(name="hunt", description="Chasse au trésor (RPG)")
 qcm_group  = app_commands.Group(name="qcm", description="QCM quotidien Los Santos (VIP)")
 vip_group  = app_commands.Group(name="vip", description="Commandes VIP (staff)")
 defi_group = app_commands.Group(name="defi", description="Commandes défis (HG)")
@@ -76,11 +75,21 @@ def safe_add_group(group: app_commands.Group):
     if existing is not None:
         print(f"[SKIP] Group déjà enregistré: /{group.name}")
         return existing
-    safe_add_group(group)
+
+    bot.tree.add_command(group)   # ✅ c'était ça qu'il fallait faire
     return group
 
 # ✅ ajoute au tree UNE fois
+hunt_group = app_commands.Group(name="hunt", description="Chasse au trésor (RPG)")
 safe_add_group(hunt_group)
+
+hunt_key_group = app_commands.Group(
+    name="key",
+    description="Gestion des clés Hunt (HG)",
+    parent=hunt_group
+)
+# selon version discord.py, parfois pas nécessaire, mais safe:
+safe_add_group(hunt_key_group)
 safe_add_group(qcm_group)
 safe_add_group(vip_group)
 safe_add_group(defi_group)
