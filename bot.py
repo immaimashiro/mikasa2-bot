@@ -67,6 +67,18 @@ vip_group  = app_commands.Group(name="vip", description="Commandes VIP (staff)")
 defi_group = app_commands.Group(name="defi", description="Commandes défis (HG)")
 cave_group = app_commands.Group(name="cave", description="Cave Mikasa (HG)")
 
+
+def safe_add_group(group: app_commands.Group):
+    """
+    Ajoute un groupe à bot.tree seulement s'il n'existe pas déjà.
+    """
+    existing = bot.tree.get_command(group.name)
+    if existing is not None:
+        print(f"[SKIP] Group déjà enregistré: /{group.name}")
+        return existing
+    safe_add_group(group)
+    return group
+
 # ✅ ajoute au tree UNE fois
 safe_add_group(hunt_group)
 safe_add_group(qcm_group)
@@ -170,16 +182,6 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
     except Exception:
         pass
 
-def safe_add_group(group: app_commands.Group):
-    """
-    Ajoute un groupe à bot.tree seulement s'il n'existe pas déjà.
-    """
-    existing = bot.tree.get_command(group.name)
-    if existing is not None:
-        print(f"[SKIP] Group déjà enregistré: /{group.name}")
-        return existing
-    safe_add_group(group)
-    return group
 
 def safe_tree_command(name: str, description: str):
     """
