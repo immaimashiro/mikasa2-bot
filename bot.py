@@ -61,18 +61,26 @@ s3 = S3Service()
 
 scheduler = AsyncIOScheduler(timezone=services.PARIS_TZ)
 
-vip_group = app_commands.Group(name="vip", description="Commandes VIP (staff)")
+hunt_group = app_commands.Group(name="hunt", description="Chasse au trésor (RPG)")
+qcm_group  = app_commands.Group(name="qcm", description="QCM quotidien Los Santos (VIP)")
+vip_group  = app_commands.Group(name="vip", description="Commandes VIP (staff)")
 defi_group = app_commands.Group(name="defi", description="Commandes défis (HG)")
 cave_group = app_commands.Group(name="cave", description="Cave Mikasa (HG)")
-qcm_group = app_commands.Group(name="qcm", description="QCM quotidien Los Santos (VIP)")
-hunt_group = app_commands.Group(name="hunt", description="Chasse au trésor (RPG)")
-bot.tree.add_command(hunt_group)
-bot.tree.add_command(qcm_group)
-bot.tree.add_command(vip_group)
-bot.tree.add_command(defi_group)
-bot.tree.add_command(cave_group)
 
-hunt_key_group = app_commands.Group(name="key", description="Gestion des clés Hunt (HG)", parent=hunt_group)
+# ✅ ajoute au tree UNE fois
+safe_add_group(hunt_group)
+safe_add_group(qcm_group)
+safe_add_group(vip_group)
+safe_add_group(defi_group)
+safe_add_group(cave_group)
+
+# ✅ sous-group /hunt key
+hunt_key_group = app_commands.Group(
+    name="key",
+    description="Gestion des clés Hunt (HG)",
+    parent=hunt_group
+)
+
 vip_log_group = app_commands.Group(name="log", description="Logs VIP", parent=vip_group)
 
 # ----------------------------
@@ -170,7 +178,7 @@ def safe_add_group(group: app_commands.Group):
     if existing is not None:
         print(f"[SKIP] Group déjà enregistré: /{group.name}")
         return existing
-    bot.tree.add_command(group)
+    safe_add_group(group)
     return group
 
 def safe_tree_command(name: str, description: str):
@@ -1713,11 +1721,6 @@ async def hunt_daily(interaction: discord.Interaction):
 # ----------------------------
 # /hunt key claim (HG / direction)
 # ----------------------------
-@safe_group_command(hunt_group, name="key", description="Gestion des clés Hunt (HG).")
-@hg_check()
-async def hunt_key_group(interaction: discord.Interaction):
-    # placeholder: Discord exige une commande “parent” si tu veux une sous-branche /hunt key claim.
-    await interaction.response.send_message("Utilise une sous-commande: `/hunt key claim`.", ephemeral=True)
 
 def hunt_week_key(now=None) -> str:
     # ISO week style: 2026-W03
