@@ -1854,6 +1854,8 @@ def hunt_week_key(now=None) -> str:
     now = now or now_fr()
     y, w, _ = now.isocalendar()
     return f"{y}-W{w:02d}"
+
+
 @hunt_key_group.command(name="claim", description="Attribuer une clé Hunt à un VIP (staff).")
 @staff_check()
 @app_commands.describe(vip_id="Code VIP SUB-XXXX-XXXX")
