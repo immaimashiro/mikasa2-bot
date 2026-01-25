@@ -383,6 +383,122 @@ def build_vip_level_embed(s, vip: dict) -> discord.Embed:
     e.set_footer(text="Mikasa montre le registre VIP. 🐾")
     return e
 
+class VipPickSelect(discord.ui.Select):
+    def __init__(self, view: "VipPickView", options: List[discord.SelectOption]):
+        super().__init__(
+            placeholder="Choisir un VIP…",
+            options=options[:25],
+            min_values=1,
+            max_values=1
+        )
+        self.pick_view = view
+
+    async def callback(self, interaction: discord.Interaction):
+        code = self.values[0]
+        self.pick_view.selected_code = domain.normalize_code(code)
+        await interaction.response.edit_message(embed=self.pick_view.build_embed(), view=self.pick_view)
+
+
+class VipPickView(discord.ui.View):
+    """
+    View HG: choisir un VIP, puis:
+      - ouvrir Hub VIP (pour montrer au VIP)
+      - ouvrir Edition (HG)
+    """
+    def __init__(self, *, services, author_id: int, vip_rows: List[dict]):
+        super().__init__(timeout=5 * 60)
+        self.s = services
+        self.author_id = author_id
+        self.vip_rows = vip_rows or []
+        self.selected_code: Optional[str] = None
+
+        options: List[discord.SelectOption] = []
+        for r in self.vip_rows[:25]:
+            code = domain.normalize_code(str(r.get("code_vip", "")))
+            pseudo = domain.display_name(r.get("pseudo", code))
+            if not code:
+                continue
+            options.append(discord.SelectOption(label=f"{pseudo}", value=code, description=code))
+
+        self.add_item(VipPickSelect(self, options))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(catify("😾 Pas touche. Lance ta propre commande."), ephemeral=True)
+            return False
+        return True
+
+    def build_embed(self) -> discord.Embed:
+        e = discord.Embed(
+            title="🎯 VIP Pick (HG)",
+            description="Choisis un VIP dans la liste, puis une action.",
+            color=discord.Color.dark_purple()
+        )
+        if self.selected_code:
+            e.add_field(name="Sélection", value=f"`{self.selected_code}`", inline=False)
+        return e
+
+    @discord.ui.button(label="📌 Ouvrir Hub VIP", style=discord.ButtonStyle.primary)
+    async def open_hub(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.selected_code:
+            return await interaction.response.send_message("😾 Sélectionne d’abord un VIP.", ephemeral=True)
+
+        row_i, vip = domain.find_vip_row(self.s, self.selected_code)
+        if not row_i or not vip:
+            return await interaction.response.send_message("❌ VIP introuvable.", ephemeral=True)
+
+        code = domain.normalize_code(str(vip.get("code_vip", "")))
+        pseudo = domain.display_name(vip.get("pseudo", code))
+
+        view = VipHubView(services=self.s, code_vip=code, vip_pseudo=pseudo)
+        await interaction.response.send_message(embed=view.hub_embed(), view=view, ephemeral=True)
+
+    @discord.ui.button(label="🛠️ Edit VIP", style=discord.ButtonStyle.secondary)
+    async def edit_vip(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.selected_code:
+            return await interaction.response.send_message("😾 Sélectionne d’abord un VIP.", ephemeral=True)
+
+        row_i, vip = domain.find_vip_row(self.s, self.selected_code)
+        if not row_i or not vip:
+            return await interaction.response.send_message("❌ VIP introuvable.", ephemeral=True)
+
+        await interaction.response.send_modal(VipEditModal(services=self.s, row_i=row_i, vip=vip))
+
+class VipEditModal(discord.ui.Modal, title="VIP Edit (HG)"):
+    pseudo = discord.ui.TextInput(label="Pseudo VIP", required=False, max_length=40)
+    bleeter = discord.ui.TextInput(label="Bleeter (@...)", required=False, max_length=40)
+    discord_id = discord.ui.TextInput(label="Discord ID (chiffres)", required=False, max_length=25)
+
+    def __init__(self, *, services, row_i: int, vip: dict):
+        super().__init__()
+        self.s = services
+        self.row_i = int(row_i)
+
+        code = domain.normalize_code(str(vip.get("code_vip", "")))
+        self.pseudo.default = str(vip.get("pseudo", "") or code)
+        self.bleeter.default = str(vip.get("bleeter", "") or "")
+        self.discord_id.default = str(vip.get("discord_id", "") or "")
+
+    async def on_submit(self, interaction: discord.Interaction):
+        updates = {}
+        if self.pseudo.value.strip():
+            updates["pseudo"] = self.pseudo.value.strip()
+        if self.bleeter.value.strip() or self.bleeter.value == "":
+            updates["bleeter"] = self.bleeter.value.strip()
+        if self.discord_id.value.strip():
+            # garde uniquement digits
+            digits = "".join([c for c in self.discord_id.value.strip() if c.isdigit()])
+            updates["discord_id"] = digits
+
+        if not updates:
+            return await interaction.response.send_message("😾 Rien à modifier.", ephemeral=True)
+
+        # nécessite ton helper services.update_cell_by_header(sheet, row, header, value)
+        for header, val in updates.items():
+            self.s.update_cell_by_header("VIP", self.row_i, header, val)
+
+        await interaction.response.send_message("✅ VIP mis à jour.", ephemeral=True)
+
 
 def build_defi_status_embed(s, code: str, vip: dict) -> discord.Embed:
     wk = domain.current_challenge_week_number()
@@ -703,20 +819,25 @@ class DefiWeek12View(discord.ui.View):
 
 
 # ==========================================================
-# QCM
-# - FIXES IMPORTANTES:
-#   1) build_qcm_embed cassée (indentation + variables)
-#   2) pas de double "interaction.response" (sinon crash "already responded")
-#   3) on édite le message via interaction.message.edit si besoin
+# QCM (Daily)
+# - pas de double interaction.response
+# - pas de doublons QcmSession/shuffle_balanced
 # ==========================================================
 class QcmDailyView(discord.ui.View):
-    def __init__(self, *, services, discord_id: int, code_vip: str, vip_pseudo: str, chrono_limit_sec: int = 12):
+    def __init__(
+        self,
+        *,
+        services,
+        discord_id: int,
+        code_vip: str,
+        vip_pseudo: str,
+        chrono_limit_sec: int = 12
+    ):
         super().__init__(timeout=6 * 60)
         self.s = services
-        self.discord_id = discord_id
+        self.discord_id = int(discord_id)
         self.code_vip = domain.normalize_code(code_vip)
         self.vip_pseudo = domain.display_name(vip_pseudo or self.code_vip)
-
         self.chrono_limit_sec = int(chrono_limit_sec)
 
         self.questions = domain.qcm_pick_daily_set(self.s)
@@ -725,15 +846,16 @@ class QcmDailyView(discord.ui.View):
         self.current_index = len(self.answers)  # 0..4
         self.sent_at = now_fr()
 
-        self._add_buttons()
+        self._rebuild_items()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.discord_id:
+            # ici on répond direct car c'est un "intrus"
             await interaction.response.send_message(catify("😾 Pas touche. Lance ton propre QCM."), ephemeral=True)
             return False
         return True
 
-    def _add_buttons(self):
+    def _rebuild_items(self):
         self.clear_items()
         if self.current_index >= len(self.questions):
             self.add_item(QcmCloseButton())
@@ -748,12 +870,11 @@ class QcmDailyView(discord.ui.View):
         total = len(self.questions)
 
         if done >= total:
-            e = discord.Embed(
+            return discord.Embed(
                 title="✅ QCM terminé (aujourd’hui)",
                 description=f"Tu as répondu aux **{total}/5** questions.\nReviens demain pour le prochain QCM. 🐾",
                 color=discord.Color.green()
             )
-            return e
 
         q = self.questions[self.current_index]
         e = discord.Embed(
@@ -773,22 +894,19 @@ class QcmDailyView(discord.ui.View):
         e.set_footer(text="Chaque réponse est enregistrée immédiatement. Aucun retour arrière.")
         return e
 
-    async def refresh(self, interaction: discord.Interaction):
-        self._add_buttons()
+    async def render_from_response(self, interaction: discord.Interaction):
+        # pour les callbacks de boutons: on ACK via response.edit_message
+        self._rebuild_items()
         self.sent_at = now_fr()
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
-    async def start_tick_15s(self, message: discord.Message):
-        # Clin d’œil visuel: on édite une fois après 1s, pas toutes les secondes
-        try:
-            await asyncio.sleep(1)
-            if self.current_index >= len(self.questions):
-                return
-            await message.edit(embed=self.build_embed(), view=self)
-        except Exception:
-            pass
+    async def render_from_message_edit(self, message: discord.Message):
+        # pour les edits hors interaction.response
+        self._rebuild_items()
+        self.sent_at = now_fr()
+        await message.edit(embed=self.build_embed(), view=self)
 
-    async def submit(self, interaction: discord.Interaction, choice: str):
+    async def submit_choice(self, interaction: discord.Interaction, choice: str):
         elapsed = int((now_fr() - self.sent_at).total_seconds())
         q = self.questions[self.current_index]
 
@@ -802,6 +920,7 @@ class QcmDailyView(discord.ui.View):
             elapsed_sec=elapsed,
             chrono_limit_sec=self.chrono_limit_sec
         )
+        # IMPORTANT: ici on n'utilise JAMAIS interaction.response (déjà ACK par le bouton)
         if not ok:
             return await interaction.followup.send(f"😾 {mark}", ephemeral=True)
 
@@ -817,12 +936,10 @@ class QcmDailyView(discord.ui.View):
 
         # avancer
         self.current_index += 1
-        self._add_buttons()
-        self.sent_at = now_fr()
 
-        # IMPORTANT: ici on édite le message sans re-répondre à l'interaction
+        # edit du message original (sans interaction.response)
         try:
-            await interaction.message.edit(embed=self.build_embed(), view=self)
+            await self.render_from_message_edit(interaction.message)
         except Exception:
             pass
 
@@ -842,30 +959,11 @@ class QcmAnswerButton(discord.ui.Button):
             if isinstance(item, discord.ui.Button):
                 item.disabled = True
 
-        # ACK l'interaction en éditant (sinon Discord râle)
-        await interaction.response.edit_message(embed=view.build_embed(), view=view)
+        # ACK 1 seule fois: response.edit_message
+        await view.render_from_response(interaction)
 
-        # puis logique (followup + edit message)
-        await view.submit(interaction, self.choice)
-
-
-class QcmSession:
-    def __init__(self):
-        self.correct_pos_counts = [0, 0, 0, 0]  # A,B,C,D
-
-
-def shuffle_balanced(row, session: QcmSession, max_same=2):
-    # NOTE: build_shuffled_question_from_sheet doit exister chez toi, sinon supprime ce bloc
-    for _ in range(8):
-        q = build_shuffled_question_from_sheet(row)
-        idx = LETTERS.index(q["correct_letter"])
-        if session.correct_pos_counts[idx] < max_same:
-            session.correct_pos_counts[idx] += 1
-            return q
-
-    q = build_shuffled_question_from_sheet(row)
-    session.correct_pos_counts[LETTERS.index(q["correct_letter"])] += 1
-    return q
+        # puis logique: followup + message.edit
+        await view.submit_choice(interaction, self.choice)
 
 
 class QcmCloseButton(discord.ui.Button):
@@ -878,10 +976,9 @@ class QcmCloseButton(discord.ui.Button):
         await interaction.response.edit_message(content="✅ QCM fermé.", embed=None, view=self.view)
 
 
-
 # ==========================================================
-# (Optionnel) équilibrage des positions A/B/C/D
-# Si tu veux t’en servir ailleurs sans NameError:
+# Optionnel: équilibrage A/B/C/D si tu en as besoin ailleurs
+# (1 seule version, pas de doublon)
 # ==========================================================
 class QcmSession:
     def __init__(self):
@@ -889,10 +986,6 @@ class QcmSession:
 
 
 def build_shuffled_question_from_sheet(row: dict) -> dict:
-    """
-    Wrapper: si tu as une fonction dans domain, utilise-la.
-    Sinon, garde ce wrapper, mais il faut l’implémenter côté domain.
-    """
     fn = getattr(domain, "qcm_build_shuffled_question", None)
     if callable(fn):
         return fn(row)
