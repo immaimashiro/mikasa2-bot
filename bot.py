@@ -26,71 +26,48 @@ import uuid
 from datetime import datetime
 from services import now_fr, now_iso, normalize_code, display_name
 
+# ==========================================================
+# Gestionnaire d'erreurs commun pour toutes les commandes
+# ==========================================================
+def attach_safe_error_handler(cmd: app_commands.Command):
+    @cmd.error
+    async def on_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+
+        # Accès refusé (staff_check, permissions, etc)
+        if isinstance(error, app_commands.CheckFailure):
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send("❌ Accès refusé.", ephemeral=True)
+                else:
+                    await interaction.response.send_message("❌ Accès refusé.", ephemeral=True)
+            except Exception:
+                pass
+            return
+
+        # Autres erreurs inattendues
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ Une erreur interne est survenue.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Une erreur interne est survenue.", ephemeral=True)
+        except Exception:
+            pass
+
+        # Log console (important pour toi)
+        print("🔥 ERREUR COMMANDE:", repr(error))
+
+
+
 def _safe_respond(interaction: discord.Interaction, content: str, *, ephemeral: bool = True):
     # util interne: répond sans "already responded"
     if interaction.response.is_done():
         return interaction.followup.send(content, ephemeral=ephemeral)
     return interaction.response.send_message(content, ephemeral=ephemeral)
 
-#def safe_group_command(group, *, name: str, description: str):
-   # """
- #   Usage:
- #     @safe_group_command(hunt_group, name="daily", description="...")
- #    async def daily(interaction: discord.Interaction): ...
- #   """
-#    def deco(func):
-#        async def wrapped(interaction: discord.Interaction, *args, **kwargs):
-#            try:
- #               return await func(interaction, *args, **kwargs)
-  #          except Exception:
-    #            traceback.print_exc()
-                #return await _safe_respond(
-       #             interaction,
-       #             "😾 Une erreur interne est survenue. Réessaie dans quelques secondes.",
-        #            ephemeral=True
-        #        )
-
-        # IMPORTANT: on applique le decorator discord SUR la fonction wrappée
-       # return group.command(name=name, description=description)(wrapped)
-
-    #return deco
 
 # ----------------------------
 # ENV + creds file
 # ----------------------------
-
-def safe_group_command(group, *, name: str, description: str):
-    """
-    Ajoute une commande à un group seulement si elle n'existe pas déjà.
-    + wrapper try/except qui répond proprement.
-    """
-    def decorator(func):
-        # Anti double-enregistrement
-        existing = []
-        if hasattr(group, "commands"):
-            existing = list(group.commands)
-        elif hasattr(group, "walk_commands"):
-            existing = list(group.walk_commands())
-
-        if any(getattr(cmd, "name", None) == name for cmd in existing):
-            print(f"[SKIP] Group command déjà enregistrée: /{getattr(group, 'name', 'group')} {name}")
-            return func
-
-        async def wrapped(interaction: discord.Interaction, *args, **kwargs):
-            try:
-                return await func(interaction, *args, **kwargs)
-            except Exception:
-                traceback.print_exc()
-                return await _safe_respond(
-                    interaction,
-                    "😾 Une erreur interne est survenue. Réessaie dans quelques secondes.",
-                    ephemeral=True
-                )
-
-        return group.command(name=name, description=description)(wrapped)
-
-    return decorator
-
 
 GOOGLE_CREDS_ENV = (os.getenv("GOOGLE_CREDS") or "").strip()
 if GOOGLE_CREDS_ENV:
@@ -515,7 +492,7 @@ async def vip_autocomplete(interaction: discord.Interaction, current: str):
 # ----------------------------
 # /vip actions
 # ----------------------------
-@safe_group_command(vip_group, name="actions", description="Liste des actions et points (staff).")
+@vip_group.command(name="actions", description="Liste des actions et points (staff).")
 @staff_check()
 async def vip_actions(interaction: discord.Interaction):
     await defer_ephemeral(interaction)
@@ -534,13 +511,13 @@ async def vip_actions(interaction: discord.Interaction):
 
     if not lines:
         return await interaction.followup.send("😾 Aucune action accessible.", ephemeral=True)
-
+    
     await interaction.followup.send("📋 **Actions disponibles :**\n" + "\n".join(lines[:40]), ephemeral=True)
-
+attach_safe_error_handler(vip_actions)
 # ----------------------------
 # /vip add
 # ----------------------------
-@safe_group_command(vip_group, name="add", description="Ajouter une action/points à un VIP (staff).")
+@vip_group.command(name="add", description="Ajouter une action/points à un VIP (staff).")
 @staff_check()
 @app_commands.describe(code_vip="SUB-XXXX-XXXX", action_key="Action", quantite="Quantité", raison="Optionnel")
 async def vip_add(interaction: discord.Interaction, code_vip: str, action_key: str, quantite: int, raison: str = ""):
@@ -564,12 +541,12 @@ async def vip_add(interaction: discord.Interaction, code_vip: str, action_key: s
         _, vip = domain.find_vip_row_by_code(sheets, code_vip)
         pseudo = vip.get("pseudo", "VIP") if vip else "VIP"
         await announce_level_up(normalize_code(code_vip), pseudo, old_level, new_level)
-
+attach_safe_error_handler(vip_actions)
 # ------------------------------
 # /vip bleeter (fenêtre de vente)
 # ------------------------------
 
-@safe_group_command(vip_group, name="bleeter", description="Ajouter ou modifier le Bleeter d’un VIP (staff).")
+@vip_group.command(name="bleeter", description="Ajouter ou modifier le Bleeter d’un VIP (staff).")
 @staff_check()
 @app_commands.describe(
     query="Code VIP SUB-XXXX-XXXX ou pseudo",
@@ -613,7 +590,7 @@ async def vip_bleeter(
         msg = f"🗑️ Bleeter retiré pour **{pseudo}**"
 
     await interaction.followup.send(msg, ephemeral=True)
-
+attach_safe_error_handler(vip_actions)
 # ----------------------------
 # /vip sale (fenêtre de vente)
 # ----------------------------
@@ -626,7 +603,7 @@ CATEGORIES = [
     ("Autre", "OTHER"),
 ]
 
-@safe_group_command(vip_group, name="sale", description="Ouvrir une fenêtre de vente (panier) pour un VIP.")
+@vip_group.command(name="sale", description="Ouvrir une fenêtre de vente (panier) pour un VIP.")
 @staff_check()
 @app_commands.describe(query="Code VIP SUB-XXXX-XXXX ou pseudo")
 async def vip_sale(interaction: discord.Interaction, query: str):
@@ -655,10 +632,11 @@ async def vip_sale(interaction: discord.Interaction, query: str):
         view=view,
         ephemeral=True
     )
+attach_safe_error_handler(vip_actions)
 # ----------------------------
 # /vip create
 # ----------------------------
-@safe_group_command(vip_group, name="create", description="Créer un profil VIP (staff).")
+@vip_group.command(name="create", description="Créer un profil VIP (staff).")
 @staff_check()
 @app_commands.describe(
     pseudo="Nom/Pseudo RP (obligatoire)",
@@ -740,11 +718,11 @@ async def vip_create(
     if membre:
         msg += f"\n🔗 Lié à: {membre.mention}"
     await interaction.followup.send(msg, ephemeral=True)
-
+attach_safe_error_handler(vip_actions)
 # ----------------------------
 # /vip card_generate (dans n’importe quel salon)
 # ----------------------------
-@safe_group_command(vip_group, name="card_generate", description="Générer la carte VIP (staff).")
+@vip_group.command(name="card_generate", description="Générer la carte VIP (staff).")
 @staff_check()
 @app_commands.describe(code_vip="SUB-XXXX-XXXX")
 async def vip_card_generate(interaction: discord.Interaction, code_vip: str):
@@ -794,12 +772,12 @@ async def vip_card_generate(interaction: discord.Interaction, code_vip: str):
 
     # et tu confirmes en privé (pour éviter spam)
     await interaction.followup.send(f"✅ Impression envoyée dans {interaction.channel.mention}", ephemeral=True)
-
+attach_safe_error_handler(vip_actions)
 
 # ----------------------------
 # /vip card_show
 # ----------------------------
-@safe_group_command(vip_group, name="card_show", description="Afficher une carte VIP (staff).")
+@vip_group.command(name="card_show", description="Afficher une carte VIP (staff).")
 @staff_check()
 @app_commands.describe(query="SUB-XXXX-XXXX ou pseudo")
 async def vip_card_show(interaction: discord.Interaction, query: str):
@@ -825,11 +803,11 @@ async def vip_card_show(interaction: discord.Interaction, query: str):
     embed.set_image(url=signed)
     embed.set_footer(text="Mikasa entrouvre la cachette… prrr 🐾")
     await interaction.followup.send(embed=embed, ephemeral=True)
-
+attach_safe_error_handler(vip_actions)
 # ----------------------------
 # /vip sales_sum 
 # ----------------------------
-@safe_group_command(vip_group, name="sales_summary", description="Résumé des ventes (staff).")
+@vip_group.command(name="sales_summary", description="Résumé des ventes (staff).")
 @staff_check()
 @app_commands.describe(
     periode="day | week | month",
@@ -875,7 +853,7 @@ async def vip_sales_summary(interaction: discord.Interaction, periode: str = "da
     emb.add_field(name="Top vendeurs", value="\n".join(lines), inline=False)
     emb.set_footer(text="Mikasa fait les comptes. Calculatrice dans une patte. 🐾")
     await interaction.followup.send(embed=emb, ephemeral=True)
-
+attach_safe_error_handler(vip_actions)
 
 # ----------------------------
 # /defi panel (HG)
@@ -1059,7 +1037,7 @@ async def cave_info(interaction: discord.Interaction, term: str):
 
 #VIP HELP
 
-@safe_group_command(vip_group, name="guide", description="Guide VIP – informations pour les clients VIP.")
+@vip_group.command(name="guide", description="Guide VIP – informations pour les clients VIP.")
 async def vip_guide(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
@@ -1110,7 +1088,7 @@ async def vip_guide(interaction: discord.Interaction):
 
     await interaction.followup.send(embed=embed, ephemeral=True)
 
-@safe_group_command(vip_group, name="staff_guide", description="Guide interactif VIP/Staff.")
+@vip_group.command(name="staff_guide", description="Guide interactif VIP/Staff.")
 @staff_check()
 @app_commands.describe(section="vip | staff | defi | tout")
 async def vip_help(interaction: discord.Interaction, section: str = "tout"):
@@ -1186,7 +1164,7 @@ async def vipme(interaction: discord.Interaction):
 
 #VIP edit
 
-@safe_group_command(vip_group, name="edit", description="Modifier un VIP (autocomplete + sélection interactive).")
+@vip_group.command(name="edit", description="Modifier un VIP (autocomplete + sélection interactive).")
 @staff_check()
 @app_commands.describe(vip="Choisis un VIP (autocomplete)", recherche="Optionnel si tu veux taper un nom approximatif")
 @app_commands.autocomplete(vip=vip_autocomplete)
@@ -1391,7 +1369,7 @@ async def vipsearch(interaction: discord.Interaction, term: str):
     emb.set_footer(text="Astuce: cherche aussi par code SUB-…")
     await interaction.followup.send(embed=emb, ephemeral=True)
 
-@safe_group_command(vip_group, name="log", description="Historique (LOG) d’un VIP (staff).")
+@vip_group.command(name="log", description="Historique (LOG) d’un VIP (staff).")
 @staff_check()
 @app_commands.describe(query="Pseudo ou code VIP (SUB-XXXX-XXXX)")
 async def vip_log(interaction: discord.Interaction, query: str):
@@ -1609,7 +1587,7 @@ def shuffle_with_balance(q, counts, max_same=2, tries=6):
     counts[LETTERS.index(built["correct_letter"])] += 1
     return built
 
-@safe_group_command(qcm_group, name="award", description="Distribuer les bonus QCM de la semaine (HG).")
+@qcm_group.command(name="award", description="Distribuer les bonus QCM de la semaine (HG).")
 @hg_check()
 async def qcm_award(interaction: discord.Interaction):
     await defer_ephemeral(interaction)
@@ -1623,7 +1601,7 @@ async def qcm_award(interaction: discord.Interaction):
 
     await interaction.followup.send("\n".join(lines), ephemeral=True)
 
-@safe_group_command(qcm_group, name="start", description="Lancer le QCM du jour (VIP).")
+@qcm_group.command(name="start", description="Lancer le QCM du jour (VIP).")
 async def qcm_start(interaction: discord.Interaction):
     await defer_ephemeral(interaction)
 
@@ -1653,7 +1631,7 @@ async def qcm_start(interaction: discord.Interaction):
         pass
 
 
-@safe_group_command(qcm_group, name="rules", description="Règles du QCM (VIP).")
+@qcm_group.command(name="rules", description="Règles du QCM (VIP).")
 async def qcm_rules(interaction: discord.Interaction):
     await defer_ephemeral(interaction)
 
@@ -1674,7 +1652,7 @@ async def qcm_rules(interaction: discord.Interaction):
     await interaction.followup.send(embed=e, ephemeral=True)
 
 
-@safe_group_command(qcm_group, name="top", description="Classement QCM de la semaine (VIP).")
+@vip_group.command( name="top", description="Classement QCM de la semaine (VIP).")
 async def qcm_top(interaction: discord.Interaction):
     await defer_ephemeral(interaction)
 
