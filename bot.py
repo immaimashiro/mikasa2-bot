@@ -25,6 +25,36 @@ import hunt_domain as hd
 import uuid
 from datetime import datetime
 from services import now_fr, now_iso, normalize_code, display_name
+
+def _safe_respond(interaction: discord.Interaction, content: str, *, ephemeral: bool = True):
+    # util interne: répond sans "already responded"
+    if interaction.response.is_done():
+        return interaction.followup.send(content, ephemeral=ephemeral)
+    return interaction.response.send_message(content, ephemeral=ephemeral)
+
+def safe_group_command(group, *, name: str, description: str):
+    """
+    Usage:
+      @safe_group_command(hunt_group, name="daily", description="...")
+      async def daily(interaction: discord.Interaction): ...
+    """
+    def deco(func):
+        async def wrapped(interaction: discord.Interaction, *args, **kwargs):
+            try:
+                return await func(interaction, *args, **kwargs)
+            except Exception:
+                traceback.print_exc()
+                return await _safe_respond(
+                    interaction,
+                    "😾 Une erreur interne est survenue. Réessaie dans quelques secondes.",
+                    ephemeral=True
+                )
+
+        # IMPORTANT: on applique le decorator discord SUR la fonction wrappée
+        return group.command(name=name, description=description)(wrapped)
+
+    return deco
+
 # ----------------------------
 # ENV + creds file
 # ----------------------------
