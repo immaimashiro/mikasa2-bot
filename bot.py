@@ -32,13 +32,55 @@ def _safe_respond(interaction: discord.Interaction, content: str, *, ephemeral: 
         return interaction.followup.send(content, ephemeral=ephemeral)
     return interaction.response.send_message(content, ephemeral=ephemeral)
 
+#def safe_group_command(group, *, name: str, description: str):
+   # """
+ #   Usage:
+ #     @safe_group_command(hunt_group, name="daily", description="...")
+ #    async def daily(interaction: discord.Interaction): ...
+ #   """
+#    def deco(func):
+#        async def wrapped(interaction: discord.Interaction, *args, **kwargs):
+#            try:
+ #               return await func(interaction, *args, **kwargs)
+  #          except Exception:
+    #            traceback.print_exc()
+                #return await _safe_respond(
+       #             interaction,
+       #             "😾 Une erreur interne est survenue. Réessaie dans quelques secondes.",
+        #            ephemeral=True
+        #        )
+
+        # IMPORTANT: on applique le decorator discord SUR la fonction wrappée
+       # return group.command(name=name, description=description)(wrapped)
+
+    #return deco
+
+# ----------------------------
+# ENV + creds file
+# ----------------------------
+
+def _safe_respond(interaction: discord.Interaction, content: str, *, ephemeral: bool = True):
+    if interaction.response.is_done():
+        return interaction.followup.send(content, ephemeral=ephemeral)
+    return interaction.response.send_message(content, ephemeral=ephemeral)
+
 def safe_group_command(group, *, name: str, description: str):
     """
-    Usage:
-      @safe_group_command(hunt_group, name="daily", description="...")
-      async def daily(interaction: discord.Interaction): ...
+    Ajoute une commande à un group seulement si elle n'existe pas déjà.
+    + wrapper try/except qui répond proprement.
     """
-    def deco(func):
+    def decorator(func):
+        # Anti double-enregistrement
+        existing = []
+        if hasattr(group, "commands"):
+            existing = list(group.commands)
+        elif hasattr(group, "walk_commands"):
+            existing = list(group.walk_commands())
+
+        if any(getattr(cmd, "name", None) == name for cmd in existing):
+            print(f"[SKIP] Group command déjà enregistrée: /{getattr(group, 'name', 'group')} {name}")
+            return func
+
         async def wrapped(interaction: discord.Interaction, *args, **kwargs):
             try:
                 return await func(interaction, *args, **kwargs)
@@ -50,14 +92,11 @@ def safe_group_command(group, *, name: str, description: str):
                     ephemeral=True
                 )
 
-        # IMPORTANT: on applique le decorator discord SUR la fonction wrappée
         return group.command(name=name, description=description)(wrapped)
 
-    return deco
+    return decorator
 
-# ----------------------------
-# ENV + creds file
-# ----------------------------
+
 GOOGLE_CREDS_ENV = (os.getenv("GOOGLE_CREDS") or "").strip()
 if GOOGLE_CREDS_ENV:
     with open("credentials.json", "w", encoding="utf-8") as f:
@@ -232,77 +271,6 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
     except Exception:
         pass
 
-
-
-@safe_group_command(hunt_group, name="daily", description="Lancer ta quête quotidienne Hunt.")
-async def hunt_daily(interaction: discord.Interaction):
-    await defer_ephemeral(interaction)
-
-    if not interaction.guild or not isinstance(interaction.user, discord.Member):
-        return await interaction.followup.send("❌ À utiliser sur le serveur.", ephemeral=True)
-
-    # VIP lié ?
-    row_i, vip = domain.find_vip_row_by_discord_id(sheets, interaction.user.id)
-    if not row_i or not vip:
-        return await interaction.followup.send("😾 Ton Discord n’est pas lié à un VIP.", ephemeral=True)
-
-    code = normalize_code(str(vip.get("code_vip","")))
-    pseudo = display_name(vip.get("pseudo", code))
-    is_emp = is_employee(interaction.user)
-
-    # profil hunt
-    player_row_i, player = hunt_services.ensure_hunt_player(
-        sheets,
-        discord_id=interaction.user.id,
-        code_vip=code,
-        pseudo=pseudo,
-        is_employee=is_emp,
-    )
-
-    # prison check (sauf testers)
-    tester = is_hunt_tester(interaction.user.id)
-    jail_until = str(player.get("jail_until","") or "").strip()
-    if jail_until and not tester:
-        dt = services.parse_iso_dt(jail_until)
-        if dt and dt > services.now_fr():
-            return await interaction.followup.send(f"🚔 Tu es en prison jusqu’à: `{dt.strftime('%d/%m %H:%M')}`.", ephemeral=True)
-
-    today = hunt_services._today_key()
-
-    # déjà fait aujourd'hui ?
-    last = str(player.get("last_daily_date","") or "").strip()
-    if last == today and not tester:
-        # si la daily existe on laisse reprendre, sinon on bloque
-        di, dr = hunt_services._find_daily_row(sheets, interaction.user.id, today)
-        if not di:
-            return await interaction.followup.send("😾 Daily déjà faite aujourd’hui.", ephemeral=True)
-
-    daily_row_i, daily_row = hunt_services.ensure_daily(
-        sheets,
-        discord_id=interaction.user.id,
-        code_vip=code,
-        date_key=today,
-    )
-
-    # si DONE et pas tester => bloque
-    status = str(daily_row.get("status","RUNNING") or "").strip().upper()
-    if status == "DONE" and not tester:
-        return await interaction.followup.send("✅ Tu as déjà terminé ta daily aujourd’hui.", ephemeral=True)
-
-    view = hunt_ui.HuntDailyView(
-        services=sheets,
-        discord_id=interaction.user.id,
-        code_vip=code,
-        player_row_i=player_row_i,
-        player=player,
-        daily_row_i=daily_row_i,
-        daily_row=daily_row,
-        tester_bypass=tester,
-    )
-
-    await interaction.followup.send(embed=view.build_embed(), view=view, ephemeral=True)
-
-
 @hunt_group.command(name="avatar", description="Choisir ton personnage (direction SubUrban).")
 async def hunt_avatar(interaction: discord.Interaction):
     await defer_ephemeral(interaction)
@@ -322,7 +290,7 @@ async def hunt_avatar(interaction: discord.Interaction):
     is_emp = is_employee(interaction.user)
 
     # ensure player
-    hunt_domain.ensure_player(
+    hd.ensure_player(
         sheets,
         discord_id=interaction.user.id,
         vip_code=vip_code,
@@ -339,7 +307,7 @@ async def hunt_avatar(interaction: discord.Interaction):
     )
 
     # thumbnail si déjà un avatar
-    _, player = hunt_domain.get_player_row(sheets, interaction.user.id)
+    _, player = hd.get_player_row(sheets, interaction.user.id)
     if player and str(player.get("avatar_url","")).strip():
         emb.set_thumbnail(url=str(player.get("avatar_url","")).strip())
 
@@ -422,26 +390,6 @@ def safe_tree_command(name: str, description: str):
             print(f"[SKIP] Command déjà enregistrée: {name}")
             return func
         return bot.tree.command(name=name, description=description)(func)
-    return decorator
-
-def safe_group_command(group, name: str, description: str):
-    """
-    Ajoute une commande à un group seulement si elle n'existe pas déjà.
-    Supporte app_commands.Group et app_commands.CommandGroup.
-    """
-    def decorator(func):
-        # Récupère les commandes existantes du group
-        existing = []
-        if hasattr(group, "commands"):
-            existing = list(group.commands)
-        elif hasattr(group, "walk_commands"):
-            existing = list(group.walk_commands())
-
-        if any(getattr(cmd, "name", None) == name for cmd in existing):
-            print(f"[SKIP] Group command déjà enregistrée: {getattr(group, 'name', 'group')} {name}")
-            return func
-
-        return group.command(name=name, description=description)(func)
     return decorator
 
 # ----------------------------
@@ -1995,10 +1943,10 @@ async def hunt_key_claim(interaction: discord.Interaction, vip_id: str):
     discord_id = int(did)
 
     # check player
-    p_row_i, player = hunt_domain.get_player_row(sheets, discord_id)
+    p_row_i, player = hd.get_player_row(sheets, discord_id)
     if not p_row_i or not player:
         pseudo = domain.display_name(vip.get("pseudo", vip_code))
-        p_row_i, player = hunt_domain.ensure_player(
+        p_row_i, player = hd.ensure_player(
             sheets, discord_id=discord_id, vip_code=vip_code, pseudo=pseudo, is_employee=False
         )
 
