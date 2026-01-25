@@ -1369,7 +1369,7 @@ async def vipsearch(interaction: discord.Interaction, term: str):
     emb.set_footer(text="Astuce: cherche aussi par code SUB-…")
     await interaction.followup.send(embed=emb, ephemeral=True)
 
-@vip_group.command(name="log", description="Historique (LOG) d’un VIP (staff).")
+@vip_group.command(name="viplog", description="Historique (LOG) d’un VIP (staff).")
 @staff_check()
 @app_commands.describe(query="Pseudo ou code VIP (SUB-XXXX-XXXX)")
 async def vip_log(interaction: discord.Interaction, query: str):
