@@ -145,6 +145,13 @@ def get_last_actions(s: SheetsService, code_vip: str, n: int = 3):
     items.sort(key=lambda x: x[0], reverse=True)
     return items[:n]
 
+def find_vip_row(s, code_vip: str):
+    code_vip = normalize_code(code_vip)
+    rows = s.read_all("VIP")
+    for i, r in enumerate(rows, start=2):  # souvent header ligne 1
+        if normalize_code(str(r.get("code_vip", ""))) == code_vip:
+            return i, r
+    return None, None
 
 # ----------------------------
 # Niveaux
