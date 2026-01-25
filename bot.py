@@ -59,11 +59,6 @@ def _safe_respond(interaction: discord.Interaction, content: str, *, ephemeral: 
 # ENV + creds file
 # ----------------------------
 
-def _safe_respond(interaction: discord.Interaction, content: str, *, ephemeral: bool = True):
-    if interaction.response.is_done():
-        return interaction.followup.send(content, ephemeral=ephemeral)
-    return interaction.response.send_message(content, ephemeral=ephemeral)
-
 def safe_group_command(group, *, name: str, description: str):
     """
     Ajoute une commande à un group seulement si elle n'existe pas déjà.
@@ -313,71 +308,6 @@ async def hunt_avatar(interaction: discord.Interaction):
 
     emb.set_footer(text="Mikasa prépare ton badge… 🐾")
     await interaction.followup.send(embed=emb, view=view, ephemeral=True)
-
-@safe_group_command(hunt_group, name="key", description="Gestion des clés Hunt (staff).")
-@staff_check()
-async def hunt_key_group(interaction: discord.Interaction):
-    # groupe placeholder si tu veux des sous-commandes, sinon supprime
-    await reply_ephemeral(interaction, "Utilise `/hunt key_claim <VIP_ID>`.")
-
-@safe_group_command(hunt_group, name="key_claim", description="Attribuer une clé hebdo à un VIP (staff).")
-@staff_check()
-@app_commands.describe(vip_id="Code VIP (SUB-XXXX-XXXX)")
-async def hunt_key_claim(interaction: discord.Interaction, vip_id: str):
-    await defer_ephemeral(interaction)
-
-    vip_id = normalize_code(vip_id)
-    row_i, vip = domain.find_vip_row_by_code(sheets, vip_id)
-    if not row_i or not vip:
-        return await interaction.followup.send("❌ VIP introuvable.", ephemeral=True)
-
-    did = str(vip.get("discord_id","") or "").strip()
-    if not did.isdigit():
-        return await interaction.followup.send("😾 Ce VIP n’est pas lié à un discord_id.", ephemeral=True)
-
-    discord_id = int(did)
-    pseudo = display_name(vip.get("pseudo", vip_id))
-
-    # on essaie de détecter employé via le serveur
-    key_type = "NORMAL"
-    try:
-        member = interaction.guild.get_member(discord_id)
-        if member and is_employee(member):
-            key_type = "GOLD"
-    except Exception:
-        pass
-
-    # assure player
-    hunt_services.ensure_hunt_player(
-        sheets,
-        discord_id=discord_id,
-        code_vip=vip_id,
-        pseudo=pseudo,
-        is_employee=(key_type == "GOLD"),
-    )
-
-    ok, msg = hunt_services.claim_weekly_key(
-        sheets,
-        code_vip=vip_id,
-        discord_id=discord_id,
-        claimed_by=interaction.user.id,
-        key_type=key_type,
-    )
-    if not ok:
-        return await interaction.followup.send(msg, ephemeral=True)
-
-    # annonce publique
-    try:
-        emb = discord.Embed(
-            title="🗝️ Clé Hunt attribuée",
-            description=f"Une clé **{key_type}** a été donnée à **{pseudo}** (`{vip_id}`).\n😼 Mikasa claque le cadenas. *clac* 🐾",
-            color=discord.Color.gold()
-        )
-        await interaction.channel.send(embed=emb)
-    except Exception:
-        pass
-
-    await interaction.followup.send(msg, ephemeral=True)
 
 
 def safe_tree_command(name: str, description: str):
@@ -1924,11 +1854,10 @@ def hunt_week_key(now=None) -> str:
     now = now or now_fr()
     y, w, _ = now.isocalendar()
     return f"{y}-W{w:02d}"
-
 @hunt_key_group.command(name="claim", description="Attribuer une clé Hunt à un VIP (staff).")
 @staff_check()
 @app_commands.describe(vip_id="Code VIP SUB-XXXX-XXXX")
-async def hunt_key_claim(interaction: discord.Interaction, vip_id: str):
+async def hunt_key_claim_cmd(interaction: discord.Interaction, vip_id: str):
     await defer_ephemeral(interaction)
 
     vip_code = domain.normalize_code(vip_id)
@@ -1950,7 +1879,7 @@ async def hunt_key_claim(interaction: discord.Interaction, vip_id: str):
             sheets, discord_id=discord_id, vip_code=vip_code, pseudo=pseudo, is_employee=False
         )
 
-    week_key = hunt_services.hunt_week_key()
+    week_key = hunt_week_key()
 
     # block if already claimed this week
     rows = sheets.get_all_records(hunt_services.T_KEYS)
