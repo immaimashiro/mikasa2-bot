@@ -97,6 +97,58 @@ H_REPUTATION = [
     "updated_at"
 ]
 
+def equipped_load(raw: str) -> Dict[str, Any]:
+    try:
+        if isinstance(raw, dict):
+            return raw
+        return json.loads(raw) if raw else {}
+    except Exception:
+        return {}
+
+def equipped_dump(obj: Dict[str, Any]) -> str:
+    try:
+        return json.dumps(obj, ensure_ascii=False)
+    except Exception:
+        return "{}"
+
+def player_equipped_get(row: Dict[str, Any]) -> Dict[str, Any]:
+    return equipped_load(str(row.get("equipped_json", "") or ""))
+
+def player_equipped_set(sheets, row_i: int, eq: Dict[str, Any]) -> None:
+    sheets.update_cell_by_header(T_PLAYERS, int(row_i), "equipped_json", equipped_dump(eq))
+
+# --- Ally roll cooldown (hebdo) stocké dans equipped_json ---
+def ally_roll_week_key_get(row: Dict[str, Any]) -> str:
+    eq = player_equipped_get(row)
+    return str(eq.get("ally_roll_week_key", "") or "").strip()
+
+def ally_roll_week_key_set(sheets, row_i: int, week_key: str) -> None:
+    # set "déjà tenté cette semaine" même si fail, pour empêcher le spam
+    # (on l'écrit au moment du roll, succès ou échec)
+    # => view/UI dira "déjà tenté"
+    row_i = int(row_i)
+    # reload row? optionnel si tu as déjà row sous la main
+    # ici on suppose que l'appelant a row, sinon tu peux fetch
+    # (je te laisse simple: on écrit direct en lisant avant via get_player_row)
+    _, row = get_player_row(sheets, int(sheets.get_last_discord_id_placeholder()) )  # <-- REMOVE si tu n’as pas ce helper
+    # ↑ IMPORTANT: si tu n'as pas ce helper, ignore ce bloc et fais la version "safe" ci-dessous.
+    pass
+
+def ally_roll_week_key_set_with_row(sheets, row_i: int, row: Dict[str, Any], week_key: str) -> None:
+    eq = player_equipped_get(row)
+    eq["ally_roll_week_key"] = str(week_key)
+    player_equipped_set(sheets, int(row_i), eq)
+
+def player_get_ally(row: Dict[str, Any]) -> Tuple[str, str]:
+    return (str(row.get("ally_tag", "") or "").strip(), str(row.get("ally_url", "") or "").strip())
+
+def player_set_ally(sheets, row_i: int, ally_tag: str, ally_url: str) -> None:
+    sheets.update_cell_by_header(T_PLAYERS, int(row_i), "ally_tag", (ally_tag or "").strip())
+    sheets.update_cell_by_header(T_PLAYERS, int(row_i), "ally_url", (ally_url or "").strip())
+
+def player_clear_ally(sheets, row_i: int) -> None:
+    player_set_ally(sheets, int(row_i), "", "")
+
 # ==========================================================
 # Settings
 # ==========================================================
