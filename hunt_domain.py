@@ -560,3 +560,105 @@ def start_daily_if_allowed(
 
     daily_row_i, daily_row, state = start_or_resume_daily(sheets, player_row=player_row)
     return True, "OK", player_row_i, player_row, daily_row_i, daily_row, state
+
+RARITY_WEIGHTS_NORMAL = {
+    "common": 70,
+    "uncommon": 24,
+    "rare": 5,
+    "epic": 1,
+    "legendary": 0,
+}
+
+RARITY_WEIGHTS_GOLD = {
+    "common": 20,
+    "uncommon": 50,
+    "rare": 22,
+    "epic": 7,
+    "legendary": 1,
+}
+
+# qty par type (par défaut)
+DEFAULT_QTY_BY_TYPE = {
+    "consumable": (1, 2),
+    "weapon": (1, 1),
+    "armor": (1, 1),
+    "key": (1, 1),
+    "misc": (1, 3),
+}
+
+def _norm_rarity(r: str) -> str:
+    r = (r or "").strip().lower()
+    if r in ("commun", "common"): return "common"
+    if r in ("peu commun", "uncommon"): return "uncommon"
+    if r in ("rare",): return "rare"
+    if r in ("epic", "épique"): return "epic"
+    if r in ("legendary", "légendaire"): return "legendary"
+    return "common"
+
+def loot_pick_item(items: List[Dict[str, Any]], *, is_gold: bool, rng: Optional[random.Random] = None) -> Dict[str, Any]:
+    rng = rng or random.Random()
+    weights = RARITY_WEIGHTS_GOLD if is_gold else RARITY_WEIGHTS_NORMAL
+
+    pool: List[Tuple[Dict[str, Any], int]] = []
+    for it in items or []:
+        iid = str(it.get("item_id", "")).strip()
+        if not iid:
+            continue
+        rarity = _norm_rarity(str(it.get("rarity", "")))
+        w = int(weights.get(rarity, 0))
+        if w <= 0:
+            continue
+        pool.append((it, w))
+
+    # fallback si ton sheet n’a pas encore de raretés propres
+    if not pool:
+        # prend n’importe quel item_id non vide
+        candidates = [it for it in items if str(it.get("item_id", "")).strip()]
+        if not candidates:
+            return {}
+        return rng.choice(candidates)
+
+    total = sum(w for _, w in pool)
+    pick = rng.randint(1, total)
+    acc = 0
+    for it, w in pool:
+        acc += w
+        if pick <= acc:
+            return it
+    return pool[-1][0]
+
+def loot_compute_qty(item: Dict[str, Any], *, rng: Optional[random.Random] = None) -> int:
+    rng = rng or random.Random()
+    typ = str(item.get("type", "") or "").strip().lower() or "misc"
+    lo, hi = DEFAULT_QTY_BY_TYPE.get(typ, (1, 1))
+
+    rarity = _norm_rarity(str(item.get("rarity", "")))
+    # petit bonus qty sur commun/uncommon
+    if typ in ("consumable", "misc"):
+        if rarity == "common":
+            hi = max(hi, hi + 1)
+        elif rarity == "uncommon":
+            hi = max(hi, hi)
+        elif rarity in ("epic", "legendary"):
+            lo, hi = 1, 1
+
+    return max(1, rng.randint(int(lo), int(hi)))
+
+def loot_open_key(items: List[Dict[str, Any]], *, key_type: str) -> Dict[str, Any]:
+    """
+    Retour:
+    {
+      item_id, item_name, qty, rarity, key_type
+    }
+    """
+    kt = (key_type or "").strip().lower()
+    is_gold = (kt == "gold_key")
+    it = loot_pick_item(items, is_gold=is_gold)
+    if not it:
+        return {"item_id": "", "item_name": "", "qty": 0, "rarity": "", "key_type": kt}
+
+    iid = str(it.get("item_id", "")).strip()
+    name = str(it.get("name", "")).strip() or iid
+    rarity = _norm_rarity(str(it.get("rarity", "")))
+    qty = loot_compute_qty(it)
+    return {"item_id": iid, "item_name": name, "qty": int(qty), "rarity": rarity, "key_type": kt}
