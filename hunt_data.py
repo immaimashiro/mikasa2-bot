@@ -1,7 +1,6 @@
 # hunt_data.py
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 import random
@@ -19,6 +18,33 @@ def format_player_title(player_name: str, avatar_tag: str) -> str:
     if not avatar_tag:
         return player_name
     return f"{player_name} [{avatar_tag}]"
+
+# Mets ton raw github ici (ou charge depuis env)
+ASSET_BASE_URL = "https://raw.githubusercontent.com/immaimashiro/mikasa2-bot/main/"
+
+@dataclass(frozen=True)
+class AvatarDef:
+    tag: str
+    name: str
+    image: str
+    short: str
+
+def asset(path: str) -> str:
+    return ASSET_BASE_URL + path
+
+# Avatars jouables (direction)
+AVATARS: List[AvatarDef] = [
+    AvatarDef(tag="MAI",   name="Mai Mashiro",  image=asset("Mai.png"),   short="Froide, efficace. Bonus ATK."),
+    AvatarDef(tag="ROXY",  name="Roxy",         image=asset("Roxy.png"),  short="Agressive. Gros dégâts, +heat possible."),
+    AvatarDef(tag="DRACO", name="Draco",        image=asset("Draco.png"), short="Tank. Prend les coups à ta place."),
+    AvatarDef(tag="LYA",   name="Lya",          image=asset("Lya.png"),   short="Support. Heal, bonus loot/perception."),
+    AvatarDef(tag="ZACKO", name="Zacko",        image=asset("Zacko.png"), short="Assassin. Critiques, bonus vol."),
+]
+
+AVATAR_BY_TAG: Dict[str, AvatarDef] = {a.tag: a for a in AVATARS}
+
+def get_avatar(tag: str) -> Optional[AvatarDef]:
+    return AVATAR_BY_TAG.get((tag or "").strip().upper())
 
 # ==========================================================
 # AVATARS (Direction SubUrban)
