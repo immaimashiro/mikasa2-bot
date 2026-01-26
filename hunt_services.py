@@ -600,6 +600,13 @@ def save_daily_state(sheets: SheetsService, row_i: int, *, step: int, state: dic
     sheets.update_cell_by_header(T_DAILY, row_i, "step", int(step))
     sheets.update_cell_by_header(T_DAILY, row_i, "state_json", json_dumps_safe(state))
 
+def inv_iter(inv: dict):
+    for k, v in (inv or {}).items():
+        try:
+            yield str(k), int(v or 0)
+        except Exception:
+            continue
+
 def finish_daily(
     sheets: SheetsService,
     row_i: int,
