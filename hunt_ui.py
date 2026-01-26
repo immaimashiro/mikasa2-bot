@@ -13,6 +13,7 @@ from services import catify, now_iso
 # -------------------------
 # petits helpers d’edit safe
 # -------------------------
+
 async def _edit(interaction: discord.Interaction, *, content: Optional[str] = None, embed: Optional[discord.Embed] = None, view: Optional[discord.ui.View] = None):
     try:
         if interaction.response.is_done():
@@ -107,20 +108,69 @@ class HuntHubView(ui.View):
 # ==========================================================
 # AVATAR (Select + Confirm + annonce publique)
 # ==========================================================
+# hunt_ui.py (extrait)
+
 class AvatarSelect(ui.Select):
     def __init__(self, view: "HuntAvatarView"):
         options = []
         for a in AVATARS:
-            options.append(discord.SelectOption(label=a["label"], value=a["tag"], description=f"Choisir {a['label']}"))
+            options.append(discord.SelectOption(
+                label=a.name,
+                value=a.tag,
+                description=a.short[:100],
+            ))
         super().__init__(placeholder="Choisis ton avatar…", options=options, min_values=1, max_values=1)
         self.v = view
 
     async def callback(self, interaction: discord.Interaction):
-        self.v.selected_tag = self.values[0]
+        self.v.selected_tag = (self.values[0] or "").strip().upper()
         await _edit(interaction, embed=self.v.build_embed(), view=self.v)
 
+
+class AvatarConfirmButton(ui.Button):
+    def __init__(self, view: "HuntAvatarView"):
+        super().__init__(label="✅ Confirmer", style=discord.ButtonStyle.success)
+        self.v = view
+
+    async def callback(self, interaction: discord.Interaction):
+        tag = (self.v.selected_tag or "").strip().upper()
+        if not tag:
+            return await interaction.response.send_message("😾 Choisis d’abord un avatar.", ephemeral=True)
+
+        # ACK rapide
+        await interaction.response.defer(ephemeral=True)
+
+        # --- 1) write Sheets (avatar_tag + avatar_url) ---
+        a = get_avatar(tag)
+        avatar_url = a.image if a else ""
+
+        # si ton view a player_row_i et services:
+        self.v.s.update_cell_by_header("HUNT_PLAYERS", self.v.player_row_i, "avatar_tag", tag)
+        self.v.s.update_cell_by_header("HUNT_PLAYERS", self.v.player_row_i, "avatar_url", avatar_url)
+        self.v.s.update_cell_by_header("HUNT_PLAYERS", self.v.player_row_i, "updated_at", now_iso())
+
+        # --- 2) annonce publique ---
+        title = format_player_title(self.v.pseudo, tag)
+        try:
+            await interaction.channel.send(f"📣 **{title}** a choisi son avatar : **[{tag}]**")
+        except Exception:
+            pass
+
+        # --- 3) lock UI + refresh embed ---
+        self.v.confirmed = True
+        for item in self.v.children:
+            item.disabled = True
+
+        try:
+            await interaction.message.edit(embed=self.v.build_embed(), view=self.v)
+        except Exception:
+            pass
+
+        await interaction.followup.send(f"✅ Avatar confirmé : **[{tag}]**", ephemeral=True)
+
+
 class HuntAvatarView(ui.View):
-    def __init__(self, *, parent: HuntHubView):
+    def __init__(self, *, parent: "HuntHubView"):
         super().__init__(timeout=10 * 60)
         self.parent = parent
         self.sheets = parent.sheets
@@ -132,65 +182,106 @@ class HuntAvatarView(ui.View):
 
         self.add_item(AvatarSelect(self))
 
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        # empêche un autre joueur de cliquer
+        if interaction.user.id != self.discord_id:
+            await interaction.response.send_message(catify("😾 Pas touche. Lance ton propre /hunt."), ephemeral=True)
+            return False
+        return True
+
     def build_embed(self) -> discord.Embed:
         row_i, row = hs.get_player_row(self.sheets, self.discord_id)
-        row = row or self.parent.player
-        current = str(row.get("avatar_tag", "")).strip() or "?"
-        pick = self.selected_tag or current
+        row = row or self.parent.player or {}
+
+        current = str(row.get("avatar_tag", "")).strip().upper() or "?"
+        pick = (self.selected_tag or current).strip().upper()
 
         e = discord.Embed(
             title="🎭 Choix d’Avatar",
             description=(
                 f"👤 **{self.pseudo}**\n"
-                f"Actuel: **{current}**\n"
-                f"Sélection: **{pick}**\n\n"
+                f"Actuel: **[{current}]**\n"
+                f"Sélection: **[{pick}]**\n\n"
                 "Choisis dans la liste, puis confirme."
             ),
             color=discord.Color.blurple()
         )
+
+        # image du perso sélectionné (ou actuel)
         img = avatar_image_url(pick)
         if img:
             e.set_image(url=img)
 
         if self.confirmed:
-            e.add_field(name="✅ Confirmé", value=f"Avatar défini sur **{pick}**", inline=False)
+            e.add_field(name="✅ Confirmé", value=f"Avatar défini sur **[{pick}]**", inline=False)
             e.set_footer(text="Mikasa note ça dans le registre. 🐾")
         else:
-            e.set_footer(text="Tu ne pourras pas dire que tu ne savais pas. 🐾")
+            e.set_footer(text="Tu confirmes = c’est gravé. 🐾")
+
         return e
 
     @ui.button(label="✅ Confirmer", style=discord.ButtonStyle.success)
     async def btn_confirm(self, interaction: discord.Interaction, button: ui.Button):
-        if not self.selected_tag:
+        tag = (self.selected_tag or "").strip().upper()
+        if not tag:
             return await interaction.response.send_message(catify("😾 Choisis un avatar d’abord."), ephemeral=True)
 
-        # update sheets
+        await interaction.response.defer(ephemeral=True)
+
+        # player row
         row_i, row = hs.get_player_row(self.sheets, self.discord_id)
         if not row_i or not row:
-            row_i, row = hs.ensure_player(self.sheets, discord_id=self.discord_id, vip_code=self.code_vip, pseudo=self.pseudo, is_employee=self.parent.is_employee)
+            row_i, row = hs.ensure_player(
+                self.sheets,
+                discord_id=self.discord_id,
+                vip_code=self.code_vip,
+                pseudo=self.pseudo,
+                is_employee=self.parent.is_employee
+            )
 
-        tag = self.selected_tag.strip().upper()
         url = avatar_image_url(tag)
+
+        # write Sheets (avatar_tag + avatar_url)
         hs.player_set_avatar(self.sheets, int(row_i), tag=tag, url=url)
 
-        # annonce publique (dans le salon)
+        # annonce publique
         try:
-            await interaction.channel.send(f"📣 <@{self.discord_id}> a choisi **[{tag}]** pour HUNT.")
+            title = format_player_title(self.pseudo, tag)  # si tu utilises hunt_data.py
+            await interaction.channel.send(f"📣 **{title}** a choisi son avatar : **[{tag}]**")
+        except Exception:
+            try:
+                await interaction.channel.send(f"📣 <@{self.discord_id}> a choisi **[{tag}]** pour HUNT.")
+            except Exception:
+                pass
+
+        # log
+        hs.log(
+            self.sheets,
+            discord_id=self.discord_id,
+            code_vip=self.code_vip,
+            kind="avatar",
+            message=f"avatar set {tag}",
+            meta={"tag": tag, "url": url}
+        )
+
+        # lock UI
+        self.confirmed = True
+        for it in self.children:
+            it.disabled = True
+
+        # refresh message principal
+        try:
+            await interaction.message.edit(embed=self.build_embed(), view=self)
         except Exception:
             pass
 
-        hs.log(self.sheets, discord_id=self.discord_id, code_vip=self.code_vip, kind="avatar", message=f"avatar set {tag}", meta={"tag": tag})
-
-        self.confirmed = True
-        for it in self.children:
-            if isinstance(it, ui.Select):
-                it.disabled = True
-        button.disabled = True
-        await _edit(interaction, embed=self.build_embed(), view=self)
+        await interaction.followup.send(catify(f"✅ Avatar confirmé : **[{tag}]**"), ephemeral=True)
 
     @ui.button(label="↩️ Retour", style=discord.ButtonStyle.secondary)
     async def btn_back(self, interaction: discord.Interaction, button: ui.Button):
         await _edit(interaction, embed=self.parent.build_embed(), view=self.parent)
+
+
 
 # ==========================================================
 # SHOP
