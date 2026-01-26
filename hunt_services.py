@@ -911,3 +911,12 @@ def keys_log_open_result(
             sheets.update_cell_by_header(T_KEYS, key_row_i, "meta_json", json.dumps(meta, ensure_ascii=False))
         except Exception:
             pass
+
+def player_hp_get(row: Dict[str, Any]) -> int:
+    try:
+        return int(row.get("stats_hp", 0) or 0)
+    except Exception:
+        return 0
+
+def player_hp_set(sheets, row_i: int, hp: int) -> None:
+    sheets.update_cell_by_header(T_PLAYERS, row_i, "stats_hp", str(int(hp)))
