@@ -359,10 +359,8 @@ class HuntShopView(ui.View):
         self.clear_items()
 
         if self.mode == "list":
-            if not self.items:
-                self.add_item(HuntBackToHubButton(self.parent))
-                return
-            self.add_item(HuntShopItemSelect(self))
+            # select d'items + back
+                self.add_item(HuntShopItemSelect(self))
             self.add_item(HuntBackToHubButton(self.parent))
             return
 
@@ -370,6 +368,7 @@ class HuntShopView(ui.View):
         self.add_item(HuntShopBuyButton(self))
         self.add_item(HuntShopCancelButton(self))
         self.add_item(HuntBackToHubButton(self.parent))
+
 
     def build_embed(self) -> discord.Embed:
         row_i, row = hs.get_player_row(self.sheets, self.discord_id)
@@ -502,6 +501,123 @@ class HuntBackToHubButton(ui.Button):
 # ==========================================================
 # INVENTORY + EQUIP
 # ==========================================================
+class HuntInvOpenKeyButton(ui.Button):
+    def __init__(self, view: "HuntInventoryView"):
+        super().__init__(label="🔑 Ouvrir une clé", style=discord.ButtonStyle.primary)
+        self.v = view
+
+    async def callback(self, interaction: discord.Interaction):
+        # on passe en mode confirm (UI full)
+        self.v.mode = "key_confirm"
+        self.v._rebuild()
+        await interaction.response.edit_message(embed=self.v.build_embed(), view=self.v)
+
+
+class HuntKeyConfirmOpenButton(ui.Button):
+    def __init__(self, view: "HuntInventoryView"):
+        super().__init__(label="✅ Ouvrir maintenant", style=discord.ButtonStyle.success)
+        self.v = view
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        # reload player
+        p_row_i, player = hs.get_player_row(self.v.sheets, self.v.discord_id)
+        if not p_row_i or not player:
+            return await interaction.followup.send(catify("😾 Profil introuvable."), ephemeral=True)
+
+        inv = hs.inv_load(str(player.get("inventory_json", "")))
+        n_keys = hs.inv_count(inv, "key")
+        g_keys = hs.inv_count(inv, "gold_key")
+
+        if n_keys <= 0 and g_keys <= 0:
+            # retour list
+            self.v.mode = "list"
+            self.v._rebuild()
+            try:
+                await interaction.message.edit(embed=self.v.build_embed(), view=self.v)
+            except Exception:
+                pass
+            return await interaction.followup.send(catify("😾 Tu n’as aucune clé."), ephemeral=True)
+
+        # choix: gold d’abord
+        key_type = "gold_key" if g_keys > 0 else "key"
+
+        # on consomme 1 clé
+        ok = hs.inv_remove(inv, key_type, 1)
+        if not ok:
+            return await interaction.followup.send(catify("😾 Impossible de consommer la clé."), ephemeral=True)
+
+        # loot (depuis HUNT_ITEMS)
+        items = hs.items_all(self.v.sheets)
+        res = hd.loot_open_key(items, key_type=key_type)
+
+        item_id = str(res.get("item_id", "")).strip()
+        item_name = str(res.get("item_name", "")).strip() or item_id
+        qty = int(res.get("qty", 0) or 0)
+        rarity = str(res.get("rarity", "")).strip()
+
+        if item_id and qty > 0:
+            hs.inv_add(inv, item_id, qty)
+
+        # update player
+        self.v.sheets.update_cell_by_header(hs.T_PLAYERS, int(p_row_i), "inventory_json", hs.inv_dump(inv))
+        self.v.sheets.update_cell_by_header(hs.T_PLAYERS, int(p_row_i), "updated_at", now_iso())
+
+        # log HUNT_KEYS: on essaye de lier à une ligne "claim" non ouverte si elle existe.
+        # sinon, on ne bloque pas: on loggue juste HUNT_LOG (le claim staff peut être décalé dans le temps).
+        opened_at = now_iso()
+        key_rows = hs.keys_find_unopened_for_player(self.v.sheets, discord_id=self.v.discord_id)
+
+        if key_rows:
+            key_row_i, key_row = key_rows[0]
+            meta = {"opened_via": "inventory_ui", "key_type": key_type}
+            try:
+                hs.keys_log_open_result(
+                    self.v.sheets,
+                    key_row_i=key_row_i,
+                    opened_at=opened_at,
+                    item_id=item_id,
+                    qty=qty,
+                    rarity=rarity,
+                    item_name=item_name,
+                    meta=meta
+                )
+            except Exception:
+                pass
+
+        hs.log(
+            self.v.sheets,
+            discord_id=self.v.discord_id,
+            code_vip=self.v.code_vip,
+            kind="key_open",
+            message=f"open {key_type} -> {item_id} x{qty} ({rarity})",
+            meta={"key_type": key_type, "item_id": item_id, "qty": qty, "rarity": rarity}
+        )
+
+        # UI: on repasse en list + embed “résultat” en public dans le même message
+        self.v.mode = "key_result"
+        self.v.last_key_result = {"key_type": key_type, "item_id": item_id, "item_name": item_name, "qty": qty, "rarity": rarity}
+        self.v._rebuild()
+        try:
+            await interaction.message.edit(embed=self.v.build_embed(), view=self.v)
+        except Exception:
+            pass
+
+        await interaction.followup.send(catify("✅ Clé ouverte."), ephemeral=True)
+
+
+class HuntKeyCancelOpenButton(ui.Button):
+    def __init__(self, view: "HuntInventoryView"):
+        super().__init__(label="↩️ Retour inventaire", style=discord.ButtonStyle.secondary)
+        self.v = view
+
+    async def callback(self, interaction: discord.Interaction):
+        self.v.mode = "list"
+        self.v._rebuild()
+        await interaction.response.edit_message(embed=self.v.build_embed(), view=self.v)
+
+
 class HuntInvItemSelect(ui.Select):
     def __init__(self, view: "HuntInventoryView"):
         options: List[discord.SelectOption] = []
@@ -542,6 +658,7 @@ class HuntInventoryView(ui.View):
 
         self.mode: str = "list"  # list | preview | equip_confirm
         self.selected_item_id: Optional[str] = None
+        self.last_key_result: Optional[Dict[str, Any]] = None
 
         self.inv_list: List[Tuple[str, int]] = []
         self._reload_state()
@@ -572,23 +689,28 @@ class HuntInventoryView(ui.View):
         self.clear_items()
 
         if self.mode == "list":
-            self._reload_state()
-            self.add_item(HuntInvItemSelect(self))
+            self.add_item(HuntInvOpenKeyButton(self))
+            self.add_item(HuntInventorySelect(self))  # si tu as un select inventory
             self.add_item(HuntBackToHubButton(self.parent))
             return
 
-        if self.mode == "preview":
-            self.add_item(HuntInvEquipButton(self))
-            self.add_item(HuntInvUnequipButton(self))
-            self.add_item(HuntInvBackButton(self))
+        if self.mode == "key_confirm":
+            self.add_item(HuntKeyConfirmOpenButton(self))
+            self.add_item(HuntKeyCancelOpenButton(self))
             self.add_item(HuntBackToHubButton(self.parent))
             return
 
-        if self.mode == "equip_confirm":
-            self.add_item(HuntEquipConfirmButton(self))
-            self.add_item(HuntEquipCancelButton(self))
+        if self.mode == "key_result":
+            self.add_item(HuntInvBackButton(self))     # revient au list
+            self.add_item(HuntInvOpenKeyButton(self))  # ré-ouvrir
             self.add_item(HuntBackToHubButton(self.parent))
             return
+
+        # preview d'un item inventaire (si tu as un mode preview)
+        self.add_item(HuntEquipButton(self))
+        self.add_item(HuntInvBackButton(self))
+        self.add_item(HuntBackToHubButton(self.parent))
+
 
     def build_embed(self) -> discord.Embed:
         p_row_i, player = hs.get_player_row(self.sheets, self.discord_id)
@@ -596,9 +718,13 @@ class HuntInventoryView(ui.View):
         dollars = hs.player_money_get(player)
 
         equip = hs.equip_load(str(player.get("equipped_json", "")))
+        inv = hs.inv_load(str(player.get("inventory_json", "")))
+        k1 = hs.inv_count(inv, "key")
+        k2 = hs.inv_count(inv, "gold_key")
+
         wpn = (equip.get("player_weapon") or "").strip()
         arm = (equip.get("player_armor") or "").strip()
-
+        
         if self.mode == "list":
             lines = []
             for iid, qty in self.inv_list[:15]:
@@ -615,12 +741,49 @@ class HuntInventoryView(ui.View):
                     f"💰 Argent: **{_money(dollars)}$**\n"
                     f"🗡️ Arme équipée: **{wpn or 'Aucune'}**\n"
                     f"🛡️ Armure équipée: **{arm or 'Aucune'}**\n\n"
+                    f"🔑 Clés: **{k1}** | 🔑✨ Or: **{k2}**\n\n"
                     "Sélectionne un item pour le voir et l’équiper."
                 ),
                 color=discord.Color.dark_purple()
             )
             e.add_field(name="Contenu", value="\n".join(lines), inline=False)
             e.set_footer(text="Tout se met à jour ici. 🐾")
+            return e
+            
+        if self.mode == "key_confirm":
+            inv = hs.inv_load(str(player.get("inventory_json", "")))
+            k1 = hs.inv_count(inv, "key")
+            k2 = hs.inv_count(inv, "gold_key")
+            e = discord.Embed(
+                title="🔑 Ouvrir une clé",
+                description=(
+                    f"👤 **{self.pseudo}**\n"
+                    f"🔑 Clés: **{k1}** | 🔑✨ Or: **{k2}**\n\n"
+                    "Tu veux ouvrir **1 clé** maintenant ?\n"
+                    "Priorité: **clé or** si tu en as."
+                ),
+                color=discord.Color.blurple()
+            )
+            e.set_footer(text="Confirme et le loot tombe. 🐾")
+            return e
+
+        if self.mode == "key_result":
+            r = self.last_key_result or {}
+            key_type = str(r.get("key_type", "")).strip()
+            item_name = str(r.get("item_name", "")).strip() or str(r.get("item_id", "")).strip()
+            qty = int(r.get("qty", 0) or 0)
+            rarity = str(r.get("rarity", "")).strip()
+
+            e = discord.Embed(
+                title="🎁 Résultat de la clé",
+                description=(
+                    f"🔑 Type: **{key_type}**\n"
+                    f"✨ Rareté: **{rarity}**\n\n"
+                    f"Tu obtiens: **{item_name}** x**{qty}**"
+                ),
+                color=discord.Color.gold() if key_type == "gold_key" else discord.Color.green()
+            )
+            e.set_footer(text="Tu peux ré-ouvrir une clé ou revenir à l’inventaire. 🐾")
             return e
 
         # preview / equip_confirm
