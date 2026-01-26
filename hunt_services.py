@@ -864,3 +864,50 @@ def player_money_get(row: Dict[str, Any]) -> int:
 
 def player_money_set(sheets, row_i: int, amount: int) -> None:
     sheets.update_cell_by_header(T_PLAYERS, row_i, "hunt_dollars", str(int(amount)))
+
+def keys_find_unopened_for_player(sheets, *, discord_id: int) -> List[Tuple[int, Dict[str, Any]]]:
+    """
+    Retourne [(row_i, row_dict)] des clés claimées mais pas ouvertes, pour ce joueur.
+    row_i est 2-indexé (comme d’habitude dans tes helpers), si ton système l’est.
+    """
+    rows = sheets.get_all_records(T_KEYS) or []
+    out: List[Tuple[int, Dict[str, Any]]] = []
+    for idx, r in enumerate(rows, start=2):
+        did = str(r.get("discord_id", "")).strip()
+        if did != str(int(discord_id)):
+            continue
+        opened_at = str(r.get("opened_at", "")).strip()
+        if opened_at:
+            continue
+        out.append((idx, r))
+    return out
+
+def keys_count_in_inventory(player_row: Dict[str, Any]) -> Tuple[int, int]:
+    inv = inv_load(str(player_row.get("inventory_json", "")))
+    normal = int(inv_count(inv, "key"))
+    gold = int(inv_count(inv, "gold_key"))
+    return normal, gold
+
+def keys_log_open_result(
+    sheets,
+    *,
+    key_row_i: int,
+    opened_at: str,
+    item_id: str,
+    qty: int,
+    rarity: str,
+    item_name: str,
+    meta: Optional[Dict[str, Any]] = None
+) -> None:
+    sheets.update_cell_by_header(T_KEYS, key_row_i, "opened_at", opened_at)
+    sheets.update_cell_by_header(T_KEYS, key_row_i, "open_item_id", str(item_id))
+    sheets.update_cell_by_header(T_KEYS, key_row_i, "open_qty", str(int(qty)))
+    sheets.update_cell_by_header(T_KEYS, key_row_i, "open_rarity", str(rarity))
+    sheets.update_cell_by_header(T_KEYS, key_row_i, "open_item_name", str(item_name))
+
+    # meta_json optionnel (tu l’as ajouté)
+    if meta is not None:
+        try:
+            sheets.update_cell_by_header(T_KEYS, key_row_i, "meta_json", json.dumps(meta, ensure_ascii=False))
+        except Exception:
+            pass
