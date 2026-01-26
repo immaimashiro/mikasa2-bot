@@ -53,9 +53,12 @@ AVATAR_BY_TAG: Dict[str, AvatarDef] = {a.tag: a for a in AVATARS}
 def get_avatar(tag: str) -> Optional[AvatarDef]:
     return AVATAR_BY_TAG.get((tag or "").strip().upper())
 
-def avatar_image_url(tag: str) -> str:
+def get_avatar_image(tag: str) -> str:
     a = get_avatar(tag)
     return a.image if a else ""
+
+def list_avatar_tags() -> List[str]:
+    return [a.tag for a in AVATARS]
 
 # tri de rareté (utile shop)
 RARITY_ORDER = ["common", "uncommon", "rare", "epic", "legendary"]
