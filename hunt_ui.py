@@ -281,6 +281,518 @@ class HuntAvatarView(ui.View):
     async def btn_back(self, interaction: discord.Interaction, button: ui.Button):
         await _edit(interaction, embed=self.parent.build_embed(), view=self.parent)
 
+# -------------------------
+# petites utilitaires
+# -------------------------
+def _money(n: int) -> str:
+    try:
+        n = int(n)
+    except Exception:
+        n = 0
+    return f"{n:,}".replace(",", " ")
+
+def _power_lines(power: Dict[str, Any]) -> str:
+    if not power:
+        return "Aucun bonus."
+    parts = []
+    for k, v in power.items():
+        parts.append(f"• {k}: **{v}**")
+    return "\n".join(parts)
+
+def _safe_str(x: Any) -> str:
+    return str(x or "").strip()
+
+def _edit(interaction: discord.Interaction, *, content: Optional[str] = None, embed=None, view=None):
+    # ton helper existe déjà chez toi normalement
+    return interaction.response.edit_message(content=content, embed=embed, view=view)
+
+
+# ==========================================================
+# SHOP
+# ==========================================================
+class HuntShopItemSelect(ui.Select):
+    def __init__(self, view: "HuntShopView"):
+        options: List[discord.SelectOption] = []
+        for item in view.items[:25]:
+            iid = _safe_str(item.get("item_id"))
+            name = _safe_str(item.get("name")) or iid
+            price = hs.item_price(item)
+            rarity = _safe_str(item.get("rarity"))
+            typ = _safe_str(item.get("type"))
+            label = f"{name}"
+            desc = f"{typ} | {rarity} | {price}$"
+            options.append(discord.SelectOption(label=label[:100], value=iid, description=desc[:100]))
+
+        super().__init__(placeholder="Choisis un item à acheter…", options=options, min_values=1, max_values=1)
+        self.v = view
+
+    async def callback(self, interaction: discord.Interaction):
+        iid = (self.values[0] or "").strip()
+        self.v.selected_item_id = iid
+        self.v.mode = "preview"
+        await _edit(interaction, embed=self.v.build_embed(), view=self.v)
+
+
+class HuntShopView(ui.View):
+    def __init__(self, *, parent: "HuntHubView"):
+        super().__init__(timeout=10 * 60)
+        self.parent = parent
+        self.sheets = parent.sheets
+        self.discord_id = parent.discord_id
+        self.code_vip = parent.code_vip
+        self.pseudo = parent.pseudo
+
+        self.mode: str = "list"     # list | preview
+        self.selected_item_id: Optional[str] = None
+
+        # charge items
+        self.items: List[Dict[str, Any]] = hs.items_all(self.sheets)
+        # shop = items avec price > 0
+        self.items = [it for it in self.items if hs.item_price(it) > 0]
+
+        self._rebuild()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return await self.parent.interaction_check(interaction)
+
+    def _rebuild(self):
+        self.clear_items()
+
+        if self.mode == "list":
+            if not self.items:
+                self.add_item(HuntBackToHubButton(self.parent))
+                return
+            self.add_item(HuntShopItemSelect(self))
+            self.add_item(HuntBackToHubButton(self.parent))
+            return
+
+        # preview
+        self.add_item(HuntShopBuyButton(self))
+        self.add_item(HuntShopCancelButton(self))
+        self.add_item(HuntBackToHubButton(self.parent))
+
+    def build_embed(self) -> discord.Embed:
+        row_i, row = hs.get_player_row(self.sheets, self.discord_id)
+        row = row or self.parent.player or {}
+        dollars = hs.player_money_get(row)
+
+        if self.mode == "list":
+            e = discord.Embed(
+                title="🛒 HUNT Shop",
+                description=(
+                    f"👤 **{self.pseudo}**\n"
+                    f"💰 Argent: **{_money(dollars)}$**\n\n"
+                    "Sélectionne un item pour voir l’aperçu et confirmer l’achat."
+                ),
+                color=discord.Color.dark_purple()
+            )
+            e.set_footer(text="Le shop se met à jour ici. 🐾")
+            return e
+
+        # preview
+        item = hs.item_get(self.sheets, self.selected_item_id or "")
+        if not item:
+            e = discord.Embed(title="🛒 HUNT Shop", description="😾 Item introuvable.", color=discord.Color.red())
+            self.mode = "list"
+            self._rebuild()
+            return e
+
+        name = _safe_str(item.get("name")) or _safe_str(item.get("item_id"))
+        iid = _safe_str(item.get("item_id"))
+        price = hs.item_price(item)
+        rarity = hs.item_rarity(item)
+        typ = _safe_str(item.get("type"))
+        desc = _safe_str(item.get("description"))
+        power = hs.item_power(item)
+        img = _safe_str(item.get("image_url"))
+
+        e = discord.Embed(
+            title=f"🛒 Achat: {name}",
+            description=(
+                f"🆔 `{iid}`\n"
+                f"🏷️ Type: **{typ}**\n"
+                f"✨ Rareté: **{rarity}**\n"
+                f"💸 Prix: **{_money(price)}$**\n\n"
+                f"**Effets**\n{_power_lines(power)}\n\n"
+                f"{desc if desc else ''}"
+            ).strip(),
+            color=discord.Color.blurple()
+        )
+        if img:
+            e.set_image(url=img)
+        e.set_footer(text="Confirme pour acheter (x1). 🐾")
+        return e
+
+
+class HuntShopBuyButton(ui.Button):
+    def __init__(self, view: HuntShopView):
+        super().__init__(label="✅ Acheter (x1)", style=discord.ButtonStyle.success)
+        self.v = view
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        item = hs.item_get(self.v.sheets, self.v.selected_item_id or "")
+        if not item:
+            return await interaction.followup.send(catify("😾 Item introuvable."), ephemeral=True)
+
+        price = hs.item_price(item)
+        iid = _safe_str(item.get("item_id"))
+        name = _safe_str(item.get("name")) or iid
+
+        p_row_i, player = hs.get_player_row(self.v.sheets, self.v.discord_id)
+        if not p_row_i or not player:
+            p_row_i, player = hs.ensure_player(
+                self.v.sheets,
+                discord_id=self.v.discord_id,
+                vip_code=self.v.code_vip,
+                pseudo=self.v.pseudo,
+                is_employee=self.v.parent.is_employee
+            )
+
+        money = hs.player_money_get(player)
+        if money < price:
+            return await interaction.followup.send(catify(f"😾 Pas assez d’argent. Il te manque **{_money(price - money)}$**."), ephemeral=True)
+
+        inv = hs.inv_load(str(player.get("inventory_json", "")))
+        hs.inv_add(inv, iid, 1)
+
+        new_money = money - price
+
+        self.v.sheets.update_cell_by_header(hs.T_PLAYERS, int(p_row_i), "hunt_dollars", str(int(new_money)))
+        self.v.sheets.update_cell_by_header(hs.T_PLAYERS, int(p_row_i), "inventory_json", hs.inv_dump(inv))
+        self.v.sheets.update_cell_by_header(hs.T_PLAYERS, int(p_row_i), "updated_at", now_iso())
+
+        hs.log(self.v.sheets, discord_id=self.v.discord_id, code_vip=self.v.code_vip, kind="shop_buy",
+               message=f"buy {iid} x1", meta={"item_id": iid, "price": price})
+
+        # UI refresh: on repasse en liste
+        self.v.mode = "list"
+        self.v.selected_item_id = None
+        self.v._rebuild()
+        try:
+            await interaction.message.edit(embed=self.v.build_embed(), view=self.v)
+        except Exception:
+            pass
+
+        await interaction.followup.send(catify(f"✅ Acheté: **{name}** (x1)"), ephemeral=True)
+
+
+class HuntShopCancelButton(ui.Button):
+    def __init__(self, view: HuntShopView):
+        super().__init__(label="↩️ Retour liste", style=discord.ButtonStyle.secondary)
+        self.v = view
+
+    async def callback(self, interaction: discord.Interaction):
+        self.v.mode = "list"
+        self.v.selected_item_id = None
+        self.v._rebuild()
+        await _edit(interaction, embed=self.v.build_embed(), view=self.v)
+
+
+class HuntBackToHubButton(ui.Button):
+    def __init__(self, parent: "HuntHubView"):
+        super().__init__(label="🏠 Hub", style=discord.ButtonStyle.secondary)
+        self.parent = parent
+
+    async def callback(self, interaction: discord.Interaction):
+        await _edit(interaction, embed=self.parent.build_embed(), view=self.parent)
+
+
+# ==========================================================
+# INVENTORY + EQUIP
+# ==========================================================
+class HuntInvItemSelect(ui.Select):
+    def __init__(self, view: "HuntInventoryView"):
+        options: List[discord.SelectOption] = []
+        for iid, qty in view.inv_list[:25]:
+            item = hs.item_get(view.sheets, iid) or {}
+            name = _safe_str(item.get("name")) or iid
+            typ = _safe_str(item.get("type")) or "item"
+            rarity = _safe_str(item.get("rarity"))
+            options.append(discord.SelectOption(
+                label=f"{name} x{qty}"[:100],
+                value=iid,
+                description=f"{typ} | {rarity}"[:100]
+            ))
+
+        super().__init__(placeholder="Choisis un item…", options=options or [discord.SelectOption(label="(vide)", value="__empty__", description="")], min_values=1, max_values=1)
+        self.v = view
+        if not options:
+            self.disabled = True
+
+    async def callback(self, interaction: discord.Interaction):
+        val = (self.values[0] or "").strip()
+        if val == "__empty__":
+            return await interaction.response.send_message(catify("😾 Inventaire vide."), ephemeral=True)
+        self.v.selected_item_id = val
+        self.v.mode = "preview"
+        self.v._rebuild()
+        await _edit(interaction, embed=self.v.build_embed(), view=self.v)
+
+
+class HuntInventoryView(ui.View):
+    def __init__(self, *, parent: "HuntHubView"):
+        super().__init__(timeout=10 * 60)
+        self.parent = parent
+        self.sheets = parent.sheets
+        self.discord_id = parent.discord_id
+        self.code_vip = parent.code_vip
+        self.pseudo = parent.pseudo
+
+        self.mode: str = "list"  # list | preview | equip_confirm
+        self.selected_item_id: Optional[str] = None
+
+        self.inv_list: List[Tuple[str, int]] = []
+        self._reload_state()
+        self._rebuild()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return await self.parent.interaction_check(interaction)
+
+    def _reload_state(self):
+        p_row_i, player = hs.get_player_row(self.sheets, self.discord_id)
+        player = player or self.parent.player or {}
+        inv = hs.inv_load(str(player.get("inventory_json", "")))
+
+        # inv dict -> list triée
+        items = []
+        if isinstance(inv, dict):
+            for k, v in inv.items():
+                try:
+                    q = int(v)
+                except Exception:
+                    q = 0
+                if q > 0:
+                    items.append((str(k), q))
+        items.sort(key=lambda t: t[0].lower())
+        self.inv_list = items
+
+    def _rebuild(self):
+        self.clear_items()
+
+        if self.mode == "list":
+            self._reload_state()
+            self.add_item(HuntInvItemSelect(self))
+            self.add_item(HuntBackToHubButton(self.parent))
+            return
+
+        if self.mode == "preview":
+            self.add_item(HuntInvEquipButton(self))
+            self.add_item(HuntInvUnequipButton(self))
+            self.add_item(HuntInvBackButton(self))
+            self.add_item(HuntBackToHubButton(self.parent))
+            return
+
+        if self.mode == "equip_confirm":
+            self.add_item(HuntEquipConfirmButton(self))
+            self.add_item(HuntEquipCancelButton(self))
+            self.add_item(HuntBackToHubButton(self.parent))
+            return
+
+    def build_embed(self) -> discord.Embed:
+        p_row_i, player = hs.get_player_row(self.sheets, self.discord_id)
+        player = player or self.parent.player or {}
+        dollars = hs.player_money_get(player)
+
+        equip = hs.equip_load(str(player.get("equipped_json", "")))
+        wpn = (equip.get("player_weapon") or "").strip()
+        arm = (equip.get("player_armor") or "").strip()
+
+        if self.mode == "list":
+            lines = []
+            for iid, qty in self.inv_list[:15]:
+                item = hs.item_get(self.sheets, iid) or {}
+                name = _safe_str(item.get("name")) or iid
+                lines.append(f"• **{name}** x{qty} (`{iid}`)")
+            if not lines:
+                lines = ["*Vide*"]
+
+            e = discord.Embed(
+                title="🎒 HUNT Inventory",
+                description=(
+                    f"👤 **{self.pseudo}**\n"
+                    f"💰 Argent: **{_money(dollars)}$**\n"
+                    f"🗡️ Arme équipée: **{wpn or 'Aucune'}**\n"
+                    f"🛡️ Armure équipée: **{arm or 'Aucune'}**\n\n"
+                    "Sélectionne un item pour le voir et l’équiper."
+                ),
+                color=discord.Color.dark_purple()
+            )
+            e.add_field(name="Contenu", value="\n".join(lines), inline=False)
+            e.set_footer(text="Tout se met à jour ici. 🐾")
+            return e
+
+        # preview / equip_confirm
+        iid = (self.selected_item_id or "").strip()
+        item = hs.item_get(self.sheets, iid) or {}
+        name = _safe_str(item.get("name")) or iid
+        typ = _safe_str(item.get("type")) or "item"
+        rarity = _safe_str(item.get("rarity"))
+        desc = _safe_str(item.get("description"))
+        power = hs.item_power(item)
+        img = _safe_str(item.get("image_url"))
+
+        title = "🎒 Item"
+        if self.mode == "equip_confirm":
+            title = "🧷 Équiper (confirmation)"
+
+        e = discord.Embed(
+            title=f"{title}: {name}",
+            description=(
+                f"🆔 `{iid}`\n"
+                f"🏷️ Type: **{typ}**\n"
+                f"✨ Rareté: **{rarity}**\n\n"
+                f"**Effets**\n{_power_lines(power)}\n\n"
+                f"{desc if desc else ''}"
+            ).strip(),
+            color=discord.Color.blurple()
+        )
+        if img:
+            e.set_image(url=img)
+
+        if self.mode == "preview":
+            e.set_footer(text="Équiper uniquement si arme/armure. 🐾")
+        else:
+            e.set_footer(text="Confirme pour équiper sur ton perso. 🐾")
+
+        return e
+
+
+class HuntInvBackButton(ui.Button):
+    def __init__(self, view: HuntInventoryView):
+        super().__init__(label="↩️ Retour inventaire", style=discord.ButtonStyle.secondary)
+        self.v = view
+
+    async def callback(self, interaction: discord.Interaction):
+        self.v.mode = "list"
+        self.v.selected_item_id = None
+        self.v._rebuild()
+        await _edit(interaction, embed=self.v.build_embed(), view=self.v)
+
+
+class HuntInvEquipButton(ui.Button):
+    def __init__(self, view: HuntInventoryView):
+        super().__init__(label="🧷 Équiper", style=discord.ButtonStyle.success)
+        self.v = view
+
+    async def callback(self, interaction: discord.Interaction):
+        iid = (self.v.selected_item_id or "").strip()
+        item = hs.item_get(self.v.sheets, iid)
+        if not item:
+            return await interaction.response.send_message(catify("😾 Item introuvable."), ephemeral=True)
+
+        typ = hs.item_type(item)
+        if typ not in ("weapon", "armor"):
+            return await interaction.response.send_message(catify("😾 Cet item ne peut pas être équipé."), ephemeral=True)
+
+        self.v.mode = "equip_confirm"
+        self.v._rebuild()
+        await _edit(interaction, embed=self.v.build_embed(), view=self.v)
+
+
+class HuntEquipConfirmButton(ui.Button):
+    def __init__(self, view: HuntInventoryView):
+        super().__init__(label="✅ Confirmer l’équipement", style=discord.ButtonStyle.success)
+        self.v = view
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        iid = (self.v.selected_item_id or "").strip()
+        item = hs.item_get(self.v.sheets, iid)
+        if not item:
+            return await interaction.followup.send(catify("😾 Item introuvable."), ephemeral=True)
+
+        typ = hs.item_type(item)
+        if typ not in ("weapon", "armor"):
+            return await interaction.followup.send(catify("😾 Cet item ne peut pas être équipé."), ephemeral=True)
+
+        p_row_i, player = hs.get_player_row(self.v.sheets, self.v.discord_id)
+        if not p_row_i or not player:
+            p_row_i, player = hs.ensure_player(
+                self.v.sheets,
+                discord_id=self.v.discord_id,
+                vip_code=self.v.code_vip,
+                pseudo=self.v.pseudo,
+                is_employee=self.v.parent.is_employee
+            )
+
+        inv = hs.inv_load(str(player.get("inventory_json", "")))
+        if hs.inv_count(inv, iid) <= 0:
+            return await interaction.followup.send(catify("😾 Tu ne l’as plus dans ton inventaire."), ephemeral=True)
+
+        equip = hs.equip_load(str(player.get("equipped_json", "")))
+        slot = "player_weapon" if typ == "weapon" else "player_armor"
+        equip = hs.equip_set_slot(equip, slot, iid)
+
+        self.v.sheets.update_cell_by_header(hs.T_PLAYERS, int(p_row_i), "equipped_json", hs.equip_dump(equip))
+        self.v.sheets.update_cell_by_header(hs.T_PLAYERS, int(p_row_i), "updated_at", now_iso())
+
+        name = _safe_str(item.get("name")) or iid
+        hs.log(self.v.sheets, discord_id=self.v.discord_id, code_vip=self.v.code_vip, kind="equip",
+               message=f"equip {slot}={iid}", meta={"slot": slot, "item_id": iid})
+
+        # refresh UI -> retour inventaire
+        self.v.mode = "list"
+        self.v.selected_item_id = None
+        self.v._rebuild()
+        try:
+            await interaction.message.edit(embed=self.v.build_embed(), view=self.v)
+        except Exception:
+            pass
+
+        await interaction.followup.send(catify(f"✅ Équipé: **{name}** → `{slot}`"), ephemeral=True)
+
+
+class HuntEquipCancelButton(ui.Button):
+    def __init__(self, view: HuntInventoryView):
+        super().__init__(label="↩️ Annuler", style=discord.ButtonStyle.secondary)
+        self.v = view
+
+    async def callback(self, interaction: discord.Interaction):
+        self.v.mode = "preview"
+        self.v._rebuild()
+        await _edit(interaction, embed=self.v.build_embed(), view=self.v)
+
+
+class HuntInvUnequipButton(ui.Button):
+    def __init__(self, view: HuntInventoryView):
+        super().__init__(label="🧺 Déséquiper slot", style=discord.ButtonStyle.secondary)
+        self.v = view
+
+    async def callback(self, interaction: discord.Interaction):
+        # déséquipe selon le type de l’item preview
+        iid = (self.v.selected_item_id or "").strip()
+        item = hs.item_get(self.v.sheets, iid) or {}
+        typ = hs.item_type(item)
+
+        if typ not in ("weapon", "armor"):
+            return await interaction.response.send_message(catify("😾 Je ne sais pas quel slot déséquiper pour ça."), ephemeral=True)
+
+        await interaction.response.defer(ephemeral=True)
+
+        p_row_i, player = hs.get_player_row(self.v.sheets, self.v.discord_id)
+        if not p_row_i or not player:
+            return await interaction.followup.send(catify("😾 Profil introuvable."), ephemeral=True)
+
+        equip = hs.equip_load(str(player.get("equipped_json", "")))
+        slot = "player_weapon" if typ == "weapon" else "player_armor"
+        equip = hs.equip_set_slot(equip, slot, "")
+
+        self.v.sheets.update_cell_by_header(hs.T_PLAYERS, int(p_row_i), "equipped_json", hs.equip_dump(equip))
+        self.v.sheets.update_cell_by_header(hs.T_PLAYERS, int(p_row_i), "updated_at", now_iso())
+
+        hs.log(self.v.sheets, discord_id=self.v.discord_id, code_vip=self.v.code_vip, kind="unequip",
+               message=f"unequip {slot}", meta={"slot": slot})
+
+        # refresh preview embed (reste sur preview)
+        try:
+            await interaction.message.edit(embed=self.v.build_embed(), view=self.v)
+        except Exception:
+            pass
+
+        await interaction.followup.send(catify(f"✅ Slot vidé: `{slot}`"), ephemeral=True)
 
 
 # ==========================================================
