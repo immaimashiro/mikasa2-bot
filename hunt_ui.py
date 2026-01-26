@@ -67,6 +67,9 @@ class HuntHubView(ui.View):
         row = row or self.player
         dollars = hs.player_money_get(row)
         avatar_tag = str(row.get("avatar_tag", "")).strip() or "?"
+        ally = str(player.get("ally_tag", "")).strip()
+        e.add_field(name="🤝 Allié", value=(ally if ally else "Aucun"), inline=False)
+
         e = discord.Embed(
             title="🗺️ HUNT",
             description=(
@@ -646,6 +649,68 @@ class HuntInvItemSelect(ui.Select):
         self.v._rebuild()
         await _edit(interaction, embed=self.v.build_embed(), view=self.v)
 
+class HuntInvUseButton(ui.Button):
+    def __init__(self, view: "HuntInventoryView"):
+        super().__init__(label="🩹 Utiliser", style=discord.ButtonStyle.primary)
+        self.v = view
+
+    async def callback(self, interaction: discord.Interaction):
+        iid = (self.v.selected_item_id or "").strip()
+        item = hs.item_get(self.v.sheets, iid)
+        if not item:
+            return await interaction.response.send_message(catify("😾 Item introuvable."), ephemeral=True)
+
+        typ = hs.item_type(item)
+        if typ != "consumable":
+            return await interaction.response.send_message(catify("😾 Cet item ne peut pas être utilisé."), ephemeral=True)
+
+        await interaction.response.defer(ephemeral=True)
+
+        # reload player
+        p_row_i, player = hs.get_player_row(self.v.sheets, self.v.discord_id)
+        if not p_row_i or not player:
+            return await interaction.followup.send(catify("😾 Profil introuvable."), ephemeral=True)
+
+        inv = hs.inv_load(str(player.get("inventory_json", "")))
+        if hs.inv_count(inv, iid) <= 0:
+            return await interaction.followup.send(catify("😾 Tu ne l’as plus."), ephemeral=True)
+
+        # applique effet
+        res = hd.consumable_apply(player, item)
+        healed = int(res.get("healed", 0) or 0)
+        msg = str(res.get("msg", "")).strip()
+
+        # maj HP
+        if healed > 0:
+            hp = hs.player_hp_get(player)
+            new_hp = max(0, hp + healed)
+            hs.player_hp_set(self.v.sheets, int(p_row_i), new_hp)
+
+        # consomme 1 item
+        hs.inv_remove(inv, iid, 1)
+        self.v.sheets.update_cell_by_header(hs.T_PLAYERS, int(p_row_i), "inventory_json", hs.inv_dump(inv))
+        self.v.sheets.update_cell_by_header(hs.T_PLAYERS, int(p_row_i), "updated_at", now_iso())
+
+        name = _safe_str(item.get("name")) or iid
+        hs.log(
+            self.v.sheets,
+            discord_id=self.v.discord_id,
+            code_vip=self.v.code_vip,
+            kind="use_item",
+            message=f"use {iid}",
+            meta={"item_id": iid, "healed": healed}
+        )
+
+        # refresh UI
+        self.v.mode = "list"
+        self.v.selected_item_id = None
+        self.v._rebuild()
+        try:
+            await interaction.message.edit(embed=self.v.build_embed(), view=self.v)
+        except Exception:
+            pass
+
+        await interaction.followup.send(catify(f"🩹 **{name}** utilisé. {msg}"), ephemeral=True)
 
 class HuntInventoryView(ui.View):
     def __init__(self, *, parent: "HuntHubView"):
@@ -703,6 +768,14 @@ class HuntInventoryView(ui.View):
         if self.mode == "key_result":
             self.add_item(HuntInvBackButton(self))     # revient au list
             self.add_item(HuntInvOpenKeyButton(self))  # ré-ouvrir
+            self.add_item(HuntBackToHubButton(self.parent))
+            return
+
+        if self.mode == "preview":
+            self.add_item(HuntInvEquipButton(self))
+            self.add_item(HuntInvUseButton(self))
+            self.add_item(HuntInvUnequipButton(self))
+            self.add_item(HuntInvBackButton(self))
             self.add_item(HuntBackToHubButton(self.parent))
             return
 
@@ -844,7 +917,7 @@ class HuntInvEquipButton(ui.Button):
         item = hs.item_get(self.v.sheets, iid)
         if not item:
             return await interaction.response.send_message(catify("😾 Item introuvable."), ephemeral=True)
-
+        
         typ = hs.item_type(item)
         if typ not in ("weapon", "armor"):
             return await interaction.response.send_message(catify("😾 Cet item ne peut pas être équipé."), ephemeral=True)
@@ -886,7 +959,14 @@ class HuntEquipConfirmButton(ui.Button):
             return await interaction.followup.send(catify("😾 Tu ne l’as plus dans ton inventaire."), ephemeral=True)
 
         equip = hs.equip_load(str(player.get("equipped_json", "")))
-        slot = "player_weapon" if typ == "weapon" else "player_armor"
+        ally = str(player.get("ally_tag", "")).strip()
+        # choix slot
+        if ally:
+        # priorité joueur, plus tard tu ajouteras un bouton switch
+            slot = "player_weapon" if typ == "weapon" else "player_armor"
+        else:
+            slot = "player_weapon" if typ == "weapon" else "player_armor"
+
         equip = hs.equip_set_slot(equip, slot, iid)
 
         self.v.sheets.update_cell_by_header(hs.T_PLAYERS, int(p_row_i), "equipped_json", hs.equip_dump(equip))
