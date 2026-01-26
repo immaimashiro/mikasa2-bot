@@ -3,7 +3,8 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 import discord
 from discord import ui
-
+import random
+import hunt_data as hd_data  # ou le nom exact de ton fichier hunt_data.py
 import hunt_services as hs
 import hunt_domain as hd
 from hunt_data import AVATARS, get_avatar, avatar_image_url, rarity_rank, format_player_title
@@ -67,7 +68,16 @@ class HuntHubView(ui.View):
         row = row or self.player
         dollars = hs.player_money_get(row)
         avatar_tag = str(row.get("avatar_tag", "")).strip() or "?"
-        ally = str(player.get("ally_tag", "")).strip()
+        ally_tag = str(row.get("ally_tag", "")).strip()
+        if ally_tag:
+            e.add_field(name="🤝 Allié", value=f"**{ally_tag}**", inline=True)
+        else:
+            e.add_field(name="🤝 Allié", value="*Aucun*", inline=True)
+        wk = hs.week_key_friday_17h(now_fr()) if hasattr(hs, "week_key_friday_17h") else hs.hunt_week_key()
+        roll_wk = hs.ally_roll_week_key_get(row)
+        if roll_wk == wk and not ally_tag:
+            e.add_field(name="🎲 Recrutement", value="Tenté cette semaine (échec).", inline=True)
+
         e.add_field(name="🤝 Allié", value=(ally if ally else "Aucun"), inline=False)
 
         e = discord.Embed(
@@ -101,6 +111,76 @@ class HuntHubView(ui.View):
     async def btn_inv(self, interaction: discord.Interaction, button: ui.Button):
         view = HuntInventoryView(parent=self)
         await _edit(interaction, embed=view.build_embed(), view=view)
+
+    @ui.button(label="🤝 Chercher un allié (hebdo)", style=discord.ButtonStyle.primary)
+    async def btn_ally(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.defer(ephemeral=True)
+
+        p_row_i, player = hs.get_player_row(self.sheets, self.discord_id)
+        if not p_row_i or not player:
+            return await interaction.followup.send(catify("😾 Profil introuvable."), ephemeral=True)
+
+        avatar_tag = str(player.get("avatar_tag", "")).strip().upper()
+        if not avatar_tag:
+            return await interaction.followup.send(catify("😾 Choisis d’abord ton avatar."), ephemeral=True)
+
+        week_key = hs.hunt_week_key()  # utilise TON week_key (ISO ou Friday17). Idéal: unifier plus tard.
+        roll_wk = hs.ally_roll_week_key_get(player)
+
+        ally_tag, ally_url = hs.player_get_ally(player)
+        if ally_tag:
+            return await interaction.followup.send(catify(f"😼 Tu as déjà un allié: **{ally_tag}**."), ephemeral=True)
+
+        if roll_wk == week_key:
+            return await interaction.followup.send(catify("😾 Tu as déjà tenté de recruter un allié cette semaine."), ephemeral=True)
+
+        # --- chances ---
+        is_emp = str(player.get("is_employee", "0")).strip().lower() in ("1", "true", "yes")
+        chance = 0.50 if is_emp else 0.10  # non employés: rare
+        ok = (random.random() < chance)
+
+        # on marque la tentative quoi qu'il arrive (anti-spam hebdo)
+        hs.ally_roll_week_key_set_with_row(self.sheets, int(p_row_i), player, week_key)
+
+        if not ok:
+            hs.log(self.sheets, discord_id=self.discord_id, code_vip=self.code_vip,
+                   kind="ally_roll", message="ally roll fail",
+                   meta={"week_key": week_key, "chance": chance})
+            # refresh hub UI
+            try:
+                await interaction.message.edit(embed=self.build_embed(), view=self)
+            except Exception:
+                pass
+            return await interaction.followup.send(catify("😾 Personne n’a répondu à l’appel cette semaine."), ephemeral=True)
+
+        # pick ally among direction, excluding player's avatar
+        tags = [t for t in hd_data.list_avatar_tags() if t != avatar_tag]
+        if not tags:
+            return await interaction.followup.send(catify("😾 Impossible de choisir un allié."), ephemeral=True)
+
+        picked = random.choice(tags)
+        img = hd_data.get_avatar_image(picked)
+
+        hs.player_set_ally(self.sheets, int(p_row_i), picked, img)
+        self.sheets.update_cell_by_header(hs.T_PLAYERS, int(p_row_i), "updated_at", now_iso())
+
+        hs.log(self.sheets, discord_id=self.discord_id, code_vip=self.code_vip,
+               kind="ally_roll", message=f"ally recruited {picked}",
+               meta={"week_key": week_key, "chance": chance, "picked": picked})
+
+        # annonce publique (salon)
+        try:
+            await interaction.channel.send(f"📣 <@{self.discord_id}> a recruté un allié : **[{picked}]**")
+        except Exception:
+            pass
+
+        # refresh hub UI
+        try:
+            await interaction.message.edit(embed=self.build_embed(), view=self)
+        except Exception:
+            pass
+
+        await interaction.followup.send(catify(f"✅ Un allié répond à l’appel: **{picked}**."), ephemeral=True)
 
     @ui.button(label="✅ Fermer", style=discord.ButtonStyle.success)
     async def btn_close(self, interaction: discord.Interaction, button: ui.Button):
