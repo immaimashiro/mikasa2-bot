@@ -97,6 +97,139 @@ H_REPUTATION = [
     "updated_at"
 ]
 
+# ----------------------------
+# equipped_json helpers
+# ----------------------------
+def equipped_load(raw: str) -> Dict[str, Any]:
+    try:
+        if isinstance(raw, dict):
+            return raw
+        return json.loads(raw) if raw else {}
+    except Exception:
+        return {}
+
+def equipped_dump(obj: Dict[str, Any]) -> str:
+    try:
+        return json.dumps(obj, ensure_ascii=False)
+    except Exception:
+        return "{}"
+
+def player_equipped_get(row: Dict[str, Any]) -> Dict[str, Any]:
+    return equipped_load(str(row.get("equipped_json", "") or ""))
+
+def player_equipped_set(sheets, row_i: int, eq: Dict[str, Any]) -> None:
+    sheets.update_cell_by_header(T_PLAYERS, int(row_i), "equipped_json", equipped_dump(eq))
+
+def equip_get(row: Dict[str, Any], *, who: str, slot: str) -> str:
+    eq = player_equipped_get(row)
+    root = "equip_player" if who == "player" else "equip_ally"
+    d = eq.get(root, {}) if isinstance(eq.get(root, {}), dict) else {}
+    return str(d.get(slot, "") or "").strip()
+
+def equip_set(sheets, row_i: int, row: Dict[str, Any], *, who: str, slot: str, item_id: str) -> None:
+    eq = player_equipped_get(row)
+    root = "equip_player" if who == "player" else "equip_ally"
+    if not isinstance(eq.get(root, {}), dict):
+        eq[root] = {}
+    eq[root][slot] = (item_id or "").strip()
+    player_equipped_set(sheets, int(row_i), eq)
+
+def equip_clear(sheets, row_i: int, row: Dict[str, Any], *, who: str, slot: str) -> None:
+    equip_set(sheets, row_i, row, who=who, slot=slot, item_id="")
+
+def ally_change_week_key_get(row: Dict[str, Any]) -> str:
+    eq = player_equipped_get(row)
+    return str(eq.get("ally_change_week_key", "") or "").strip()
+
+def ally_change_week_key_set(sheets, row_i: int, row: Dict[str, Any], week_key: str) -> None:
+    eq = player_equipped_get(row)
+    eq["ally_change_week_key"] = str(week_key)
+    player_equipped_set(sheets, int(row_i), eq)
+
+# ----------------------------
+# Weekly score
+# ----------------------------
+def weekly_score_calc(weekly_row: Dict[str, Any]) -> int:
+    def _i(k: str) -> int:
+        try:
+            return int(weekly_row.get(k, 0) or 0)
+        except Exception:
+            return 0
+
+    wins = _i("wins")
+    deaths = _i("deaths")
+    boss = _i("boss_kills")
+    steals = _i("steals")
+    jail = _i("jail_count")
+
+    # formule stable & lisible (tu ajusteras après tests)
+    score = (
+        wins * 10
+        + boss * 50
+        + steals * 15
+        - deaths * 20
+        - jail * 10
+    )
+    return int(score)
+
+def weekly_find_row(sheets, week_key: str, discord_id: int) -> Tuple[int, Optional[Dict[str, Any]]]:
+    rows = sheets.get_all_records(T_WEEKLY)
+    did = str(int(discord_id))
+    for idx, r in enumerate(rows, start=2):  # header row = 1
+        if str(r.get("week_key", "")).strip() == week_key and str(r.get("discord_id", "")).strip() == did:
+            return idx, r
+    return 0, None
+
+def weekly_ensure_row(sheets, *, week_key: str, discord_id: int, code_vip: str, pseudo: str) -> Tuple[int, Dict[str, Any]]:
+    row_i, row = weekly_find_row(sheets, week_key, discord_id)
+    if row_i and row:
+        return row_i, row
+
+    base = {
+        "week_key": week_key,
+        "discord_id": str(int(discord_id)),
+        "code_vip": (code_vip or "").strip(),
+        "pseudo": (pseudo or "").strip(),
+        "score": 0,
+        "good_runs": 0,
+        "wins": 0,
+        "deaths": 0,
+        "boss_kills": 0,
+        "steals": 0,
+        "jail_count": 0,
+        "earned_dollars": 0,
+        "earned_xp": 0,
+        "bonus_claimed": 0,
+        "top_rank": 0,
+        "updated_at": "",
+    }
+    sheets.append_by_headers(T_WEEKLY, base)
+
+    # relire
+    row_i2, row2 = weekly_find_row(sheets, week_key, discord_id)
+    return row_i2, (row2 or base)
+
+def weekly_recalc_and_save(sheets, week_key: str, discord_id: int) -> None:
+    row_i, row = weekly_find_row(sheets, week_key, discord_id)
+    if not row_i or not row:
+        return
+    score = weekly_score_calc(row)
+    sheets.update_cell_by_header(T_WEEKLY, int(row_i), "score", str(score))
+    # si tu as services.now_iso() ailleurs, remplace
+    # sheets.update_cell_by_header(T_WEEKLY, int(row_i), "updated_at", services.now_iso())
+
+def weekly_top(sheets, week_key: str, limit: int = 10) -> List[Dict[str, Any]]:
+    rows = sheets.get_all_records(T_WEEKLY)
+    wk = str(week_key).strip()
+    pool = [r for r in rows if str(r.get("week_key", "")).strip() == wk]
+    def _score(r):
+        try:
+            return int(r.get("score", 0) or 0)
+        except Exception:
+            return 0
+    pool.sort(key=_score, reverse=True)
+    return pool[: max(1, int(limit))]
+
 def equipped_load(raw: str) -> Dict[str, Any]:
     try:
         if isinstance(raw, dict):
