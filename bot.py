@@ -1895,7 +1895,38 @@ async def hunt_key_claim_cmd(interaction: discord.Interaction, vip_id: str):
     await interaction.followup.send(f"✅ Clé attribuée à `{vip_code}` → **{label}**", ephemeral=True)
 
 
+#HUNT START
 
+@hunt_group.command(name="start", description="Démarrer HUNT (hub + shop + inventory + avatar).")
+@app_commands.describe()
+async def hunt_start_cmd(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    # 1) retrouver le VIP lié au discord
+    row_i, vip = domain.find_vip_row_by_discord_id(sheets, interaction.user.id)
+    if not row_i or not vip:
+        return await interaction.followup.send("❌ Ton compte VIP n’est pas lié à ton Discord.", ephemeral=True)
+
+    code_vip = domain.normalize_code(str(vip.get("code_vip", vip.get("vip_code",""))))
+    pseudo = domain.display_name(vip.get("pseudo", code_vip))
+    # 2) statut employé si tu l’as dans players (ou vip)
+    # Ici on le lit depuis players si existant, sinon false
+    p_row_i, player = hs.get_player_row(sheets, interaction.user.id)
+    is_employee = False
+    if player:
+        is_employee = str(player.get("is_employee","0")).strip().lower() in ("1","true","yes")
+
+    view = hunt_ui.HuntHubView(
+        sheets=sheets,
+        discord_id=interaction.user.id,
+        code_vip=code_vip,
+        pseudo=pseudo,
+        is_employee=is_employee
+    )
+    await interaction.followup.send(embed=view.build_embed(), view=view, ephemeral=True)
+
+# n’oublie pas d’ajouter le group à ton tree
+# tree.add_command(hunt_group)
 # ----------------------------
 # Ready + sync + scheduler
 # ----------------------------
