@@ -4,7 +4,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import discord
 from discord import ui
 import random
-import hunt_data as hd_data  # ou le nom exact de ton fichier hunt_data.py
+import hunt_data as hda  # ou le nom exact de ton fichier hunt_data.py
+
 import hunt_services as hs
 import hunt_domain as hd
 from hunt_data import AVATARS, get_avatar, avatar_image_url, rarity_rank, format_player_title
@@ -154,12 +155,12 @@ class HuntHubView(ui.View):
             return await interaction.followup.send(catify("😾 Personne n’a répondu à l’appel cette semaine."), ephemeral=True)
 
         # pick ally among direction, excluding player's avatar
-        tags = [t for t in hd_data.list_avatar_tags() if t != avatar_tag]
+        tags = [t for t in hda.list_avatar_tags() if t != avatar_tag]
         if not tags:
             return await interaction.followup.send(catify("😾 Impossible de choisir un allié."), ephemeral=True)
 
         picked = random.choice(tags)
-        img = hd_data.get_avatar_image(picked)
+        img = hda.get_avatar_image(picked)
 
         hs.player_set_ally(self.sheets, int(p_row_i), picked, img)
         self.sheets.update_cell_by_header(hs.T_PLAYERS, int(p_row_i), "updated_at", now_iso())
@@ -182,6 +183,17 @@ class HuntHubView(ui.View):
 
         await interaction.followup.send(catify(f"✅ Un allié répond à l’appel: **{picked}**."), ephemeral=True)
 
+    @ui.button(label="🤝 Mon allié", style=discord.ButtonStyle.primary)
+    async def btn_ally(self, interaction: discord.Interaction, button: ui.Button):
+        view = HuntAllyView(parent=self)
+        await _edit(interaction, embed=view.build_embed(), view=view)
+
+    @ui.button(label="🏆 Weekly", style=discord.ButtonStyle.secondary)
+    async def btn_weekly(self, interaction: discord.Interaction, button: ui.Button):
+        view = HuntWeeklyView(parent=self)
+        await _edit(interaction, embed=view.build_embed(), view=view)
+
+    
     @ui.button(label="✅ Fermer", style=discord.ButtonStyle.success)
     async def btn_close(self, interaction: discord.Interaction, button: ui.Button):
         for it in self.children:
@@ -578,6 +590,107 @@ class HuntBackToHubButton(ui.Button):
         self.parent = parent
 
     async def callback(self, interaction: discord.Interaction):
+        await _edit(interaction, embed=self.parent.build_embed(), view=self.parent)
+
+class HuntAllyView(ui.View):
+    def __init__(self, *, parent):
+        super().__init__(timeout=10 * 60)
+        self.parent = parent
+        self.sheets = parent.sheets
+        self.discord_id = parent.discord_id
+        self.code_vip = parent.code_vip
+        self.pseudo = parent.pseudo
+
+    def _reload_player(self):
+        return hs.get_player_row(self.sheets, self.discord_id)
+
+    def build_embed(self) -> discord.Embed:
+        row_i, row = self._reload_player()
+        row = row or {}
+        avatar_tag = str(row.get("avatar_tag", "")).strip().upper() or "?"
+        ally_tag = str(row.get("ally_tag", "")).strip().upper()
+        ally_url = str(row.get("ally_url", "")).strip()
+
+        week_key = hs.hunt_week_key()
+        last_change = hs.ally_change_week_key_get(row)
+
+        e = discord.Embed(
+            title="🤝 Alliés (Direction)",
+            description=(
+                f"👤 **{self.pseudo}**\n"
+                f"🧍 Avatar: **{avatar_tag}**\n"
+                f"📅 Semaine: `{week_key}`\n\n"
+            ),
+            color=discord.Color.dark_purple()
+        )
+
+        if ally_tag:
+            e.add_field(name="Allié actuel", value=f"**[{ally_tag}]**", inline=False)
+            if ally_url:
+                e.set_thumbnail(url=ally_url)
+            if last_change == week_key:
+                e.add_field(name="Cooldown", value="Tu as déjà changé d’allié cette semaine.", inline=False)
+            else:
+                e.add_field(name="Cooldown", value="Tu peux changer d’allié **1x** cette semaine.", inline=False)
+        else:
+            e.add_field(name="Allié actuel", value="*Aucun*", inline=False)
+            e.add_field(name="Règle", value="Un allié est permanent. Tu peux le changer **1x/semaine**.", inline=False)
+
+        e.set_footer(text="Mikasa note les pactes. 🐾")
+        return e
+
+    @ui.button(label="🎲 Recruter / Changer (hebdo)", style=discord.ButtonStyle.success)
+    async def btn_roll(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.defer(ephemeral=True)
+
+        p_row_i, player = self._reload_player()
+        if not p_row_i or not player:
+            return await interaction.followup.send(catify("😾 Profil introuvable."), ephemeral=True)
+
+        avatar_tag = str(player.get("avatar_tag", "")).strip().upper()
+        if not avatar_tag:
+            return await interaction.followup.send(catify("😾 Choisis d’abord ton avatar."), ephemeral=True)
+
+        week_key = hs.hunt_week_key()
+        last_change = hs.ally_change_week_key_get(player)
+        if last_change == week_key:
+            return await interaction.followup.send(catify("😾 Tu as déjà changé d’allié cette semaine."), ephemeral=True)
+
+        # Chances
+        is_emp = str(player.get("is_employee", "0")).strip().lower() in ("1","true","yes")
+        chance = 0.50 if is_emp else 0.10
+        if random.random() >= chance:
+            # on consomme quand même le “change” hebdo (anti-spam)
+            hs.ally_change_week_key_set(self.sheets, int(p_row_i), player, week_key)
+            try:
+                await interaction.message.edit(embed=self.build_embed(), view=self)
+            except Exception:
+                pass
+            return await interaction.followup.send(catify("😾 Personne n’a répondu à l’appel cette semaine."), ephemeral=True)
+
+        # pick ally among direction excluding avatar
+        candidates = [t for t in hd.list_avatar_tags() if t != avatar_tag]
+        picked = random.choice(candidates)
+        img = hd.get_avatar_image(picked)
+
+        hs.player_set_ally(self.sheets, int(p_row_i), picked, img)
+        hs.ally_change_week_key_set(self.sheets, int(p_row_i), player, week_key)
+        self.sheets.update_cell_by_header(hs.T_PLAYERS, int(p_row_i), "updated_at", now_iso())
+
+        try:
+            await interaction.channel.send(f"📣 <@{self.discord_id}> a lié un pacte avec **[{picked}]**.")
+        except Exception:
+            pass
+
+        try:
+            await interaction.message.edit(embed=self.build_embed(), view=self)
+        except Exception:
+            pass
+
+        await interaction.followup.send(catify(f"✅ Nouvel allié: **[{picked}]**"), ephemeral=True)
+
+    @ui.button(label="↩️ Retour", style=discord.ButtonStyle.secondary)
+    async def btn_back(self, interaction: discord.Interaction, button: ui.Button):
         await _edit(interaction, embed=self.parent.build_embed(), view=self.parent)
 
 
