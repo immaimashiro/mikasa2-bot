@@ -662,3 +662,44 @@ def loot_open_key(items: List[Dict[str, Any]], *, key_type: str) -> Dict[str, An
     rarity = _norm_rarity(str(it.get("rarity", "")))
     qty = loot_compute_qty(it)
     return {"item_id": iid, "item_name": name, "qty": int(qty), "rarity": rarity, "key_type": kt}
+
+# -------------------------------------------------
+# CONSUMABLE EFFECTS
+# -------------------------------------------------
+
+def consumable_apply(player: Dict[str, Any], item: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Applique les effets d’un consommable sur le player.
+    Retour:
+    {
+      healed: int,
+      msg: str
+    }
+    """
+    power = {}
+    try:
+        raw = item.get("power_json", "")
+        if isinstance(raw, dict):
+            power = raw
+        else:
+            power = json.loads(raw) if raw else {}
+    except Exception:
+        power = {}
+
+    healed = 0
+    msg = "Effet appliqué."
+
+    # HEAL
+    if "heal" in power:
+        try:
+            heal = int(power.get("heal", 0))
+        except Exception:
+            heal = 0
+
+        hp = int(player.get("stats_hp", 0) or 0)
+        max_hp = hp  # pour l’instant hp = max_hp (tu ajouteras plus tard stats_max_hp)
+
+        healed = heal
+        msg = f"Soigne **{heal} HP**."
+
+    return {"healed": healed, "msg": msg}
