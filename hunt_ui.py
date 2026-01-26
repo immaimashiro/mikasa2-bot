@@ -1571,6 +1571,203 @@ class HuntInventoryView(ui.View):
     async def btn_back(self, interaction: discord.Interaction, button: ui.Button):
         await _edit(interaction, embed=self.parent.build_embed(), view=self.parent)
 
+class HuntWeeklyView(ui.View):
+    def __init__(self, *, parent):
+        super().__init__(timeout=10 * 60)
+        self.parent = parent
+        self.sheets = parent.sheets
+        self.discord_id = parent.discord_id
+        self.code_vip = parent.code_vip
+        self.pseudo = parent.pseudo
+
+    def build_embed(self) -> discord.Embed:
+        week_key = hs.hunt_week_key()
+        top = hs.weekly_top(self.sheets, week_key, limit=10)
+
+        lines = []
+        for i, r in enumerate(top, start=1):
+            pseudo = str(r.get("pseudo","")).strip() or str(r.get("code_vip","")).strip() or "?"
+            try:
+                sc = int(r.get("score", 0) or 0)
+            except Exception:
+                sc = 0
+            w = r.get("wins", 0)
+            d = r.get("deaths", 0)
+            b = r.get("boss_kills", 0)
+            s = r.get("steals", 0)
+            lines.append(f"**#{i}** {pseudo} — **{sc}** pts (W:{w} D:{d} B:{b} S:{s})")
+
+        e = discord.Embed(
+            title=f"🏆 Weekly Top — `{week_key}`",
+            description=("\n".join(lines) if lines else "*Aucun score cette semaine.*"),
+            color=discord.Color.gold()
+        )
+        e.set_footer(text="Le trophée observe en silence. 🐾")
+        return e
+
+    @ui.button(label="🔄 Refresh", style=discord.ButtonStyle.secondary)
+    async def btn_refresh(self, interaction: discord.Interaction, button: ui.Button):
+        await _edit(interaction, embed=self.build_embed(), view=self)
+
+    @ui.button(label="↩️ Retour", style=discord.ButtonStyle.secondary)
+    async def btn_back(self, interaction: discord.Interaction, button: ui.Button):
+        await _edit(interaction, embed=self.parent.build_embed(), view=self.parent)
+
+class HuntShopView(ui.View):
+    def __init__(self, *, parent):
+        super().__init__(timeout=10 * 60)
+        self.parent = parent
+        self.sheets = parent.sheets
+        self.discord_id = parent.discord_id
+        self.code_vip = parent.code_vip
+        self.pseudo = parent.pseudo
+
+        self.market = "SHOP"  # SHOP or BLACK
+        self.selected_item_id: Optional[str] = None
+
+        self.add_item(HuntShopMarketSelect(self))
+        self.add_item(HuntShopItemSelect(self))
+
+    def _reload(self):
+        p_row_i, player = hs.get_player_row(self.sheets, self.discord_id)
+        items = self.sheets.get_all_records(hs.T_ITEMS)
+        return p_row_i, (player or {}), items
+
+    def _is_black(self, item: dict) -> bool:
+        tp = str(item.get("type","")).upper()
+        return tp.startswith("BLACK_")
+
+    def _market_items(self, items: list) -> list:
+        if self.market == "BLACK":
+            return [r for r in items if self._is_black(r)]
+        return [r for r in items if not self._is_black(r)]
+
+    def build_embed(self) -> discord.Embed:
+        p_row_i, player, items = self._reload()
+        dollars = int(player.get("hunt_dollars", 0) or 0)
+
+        pool = self._market_items(items)
+        by_id = {str(r.get("item_id","")).strip(): r for r in pool}
+        picked = by_id.get(self.selected_item_id or "", None)
+
+        title = "🛒 Shop" if self.market == "SHOP" else "🕶️ Marché Noir"
+        e = discord.Embed(
+            title=title,
+            description=(
+                f"👤 **{self.pseudo}**\n"
+                f"💰 Argent: **{dollars}**\n"
+                f"🎯 Sélection: `{self.selected_item_id or '—'}`\n"
+            ),
+            color=(discord.Color.blurple() if self.market == "SHOP" else discord.Color.dark_gray())
+        )
+
+        if picked:
+            name = str(picked.get("name",""))
+            desc = str(picked.get("description",""))
+            rarity = str(picked.get("rarity",""))
+            price = int(picked.get("price", 0) or 0)
+            e.add_field(
+                name=f"{name} — {price}$",
+                value=f"Rareté: **{rarity}**\n{desc}",
+                inline=False
+            )
+
+            # IMPORTANT: marché noir => PAS D’IMAGE
+            if self.market != "BLACK":
+                img = str(picked.get("image_url","")).strip()
+                if img:
+                    e.set_thumbnail(url=img)
+
+        e.set_footer(text="Acheter ajoute dans ton inventaire. 🐾")
+        return e
+
+    async def refresh(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @ui.button(label="🛍️ Acheter x1", style=discord.ButtonStyle.success)
+    async def btn_buy(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.defer(ephemeral=True)
+
+        if not self.selected_item_id:
+            return await interaction.followup.send(catify("😾 Sélectionne un item."), ephemeral=True)
+
+        p_row_i, player, items = self._reload()
+        pool = self._market_items(items)
+        by_id = {str(r.get("item_id","")).strip(): r for r in pool}
+        picked = by_id.get(self.selected_item_id)
+        if not picked:
+            return await interaction.followup.send(catify("😾 Item introuvable."), ephemeral=True)
+
+        price = int(picked.get("price", 0) or 0)
+        dollars = int(player.get("hunt_dollars", 0) or 0)
+        if dollars < price:
+            return await interaction.followup.send(catify("😾 Pas assez d’argent."), ephemeral=True)
+
+        iid = str(picked.get("item_id","")).strip()
+        inv = hs.inv_load(str(player.get("inventory_json","")))
+        hs.inv_add(inv, iid, 1)
+
+        self.sheets.update_cell_by_header(hs.T_PLAYERS, int(p_row_i), "inventory_json", hs.inv_dump(inv))
+        self.sheets.update_cell_by_header(hs.T_PLAYERS, int(p_row_i), "hunt_dollars", str(dollars - price))
+        self.sheets.update_cell_by_header(hs.T_PLAYERS, int(p_row_i), "updated_at", now_iso())
+
+        try:
+            await interaction.message.edit(embed=self.build_embed(), view=self)
+        except Exception:
+            pass
+
+        await interaction.followup.send(catify(f"✅ Acheté: `{iid}` x1"), ephemeral=True)
+
+    @ui.button(label="↩️ Retour", style=discord.ButtonStyle.secondary)
+    async def btn_back(self, interaction: discord.Interaction, button: ui.Button):
+        await _edit(interaction, embed=self.parent.build_embed(), view=self.parent)
+
+
+class HuntShopMarketSelect(ui.Select):
+    def __init__(self, view: HuntShopView):
+        super().__init__(
+            placeholder="Choisir marché…",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(label="Shop", value="SHOP"),
+                discord.SelectOption(label="Marché Noir", value="BLACK"),
+            ]
+        )
+        self.shop_view = view
+
+    async def callback(self, interaction: discord.Interaction):
+        self.shop_view.market = self.values[0]
+        self.shop_view.selected_item_id = None
+        await self.shop_view.refresh(interaction)
+
+
+class HuntShopItemSelect(ui.Select):
+    def __init__(self, view: HuntShopView):
+        super().__init__(placeholder="Choisir un item…", min_values=1, max_values=1, options=[
+            discord.SelectOption(label="(ouvre la liste)", value="__noop__")
+        ])
+        self.shop_view = view
+
+    async def callback(self, interaction: discord.Interaction):
+        p_row_i, player, items = self.shop_view._reload()
+        pool = self.shop_view._market_items(items)
+
+        opts = []
+        for r in pool:
+            iid = str(r.get("item_id","")).strip()
+            nm = str(r.get("name","")).strip() or iid
+            price = int(r.get("price", 0) or 0)
+            tp = str(r.get("type","")).upper()
+            opts.append(discord.SelectOption(label=f"{nm} — {price}$", value=iid, description=tp[:90]))
+
+        if not opts:
+            return await interaction.response.send_message(catify("😾 Aucun item ici."), ephemeral=True)
+
+        self.options = opts[:25]
+        self.shop_view.selected_item_id = self.values[0]
+        await self.shop_view.refresh(interaction)
+
     # NOTE: Discord ne rappelle pas automatiquement _set_buttons_state
     # Donc on le fait dans interaction_check via edit events? simple: on laisse OK,
     # car les boutons protègent aussi côté serveur (checks).
