@@ -764,3 +764,103 @@ def money_reward() -> int:
 
 def xp_reward() -> int:
     return random.randint(8, 20)
+
+# -------------------------
+# Items
+# -------------------------
+_ITEMS_CACHE: Dict[str, Dict[str, Any]] = {}
+
+def items_all(sheets) -> List[Dict[str, Any]]:
+    rows = sheets.get_all_records(T_ITEMS) or []
+    out = []
+    for r in rows:
+        item_id = str(r.get("item_id", "")).strip()
+        if not item_id:
+            continue
+        out.append(r)
+    return out
+
+def items_refresh_cache(sheets) -> None:
+    global _ITEMS_CACHE
+    _ITEMS_CACHE = {}
+    for r in items_all(sheets):
+        _ITEMS_CACHE[str(r.get("item_id", "")).strip()] = r
+
+def item_get(sheets, item_id: str) -> Optional[Dict[str, Any]]:
+    iid = (item_id or "").strip()
+    if not iid:
+        return None
+    if iid not in _ITEMS_CACHE:
+        items_refresh_cache(sheets)
+    return _ITEMS_CACHE.get(iid)
+
+def item_price(item_row: Dict[str, Any]) -> int:
+    try:
+        return int(item_row.get("price", 0) or 0)
+    except Exception:
+        return 0
+
+def item_type(item_row: Dict[str, Any]) -> str:
+    return str(item_row.get("type", "") or "").strip().lower()
+
+def item_rarity(item_row: Dict[str, Any]) -> str:
+    return str(item_row.get("rarity", "") or "").strip()
+
+def item_power(item_row: Dict[str, Any]) -> Dict[str, Any]:
+    raw = item_row.get("power_json", "") or ""
+    if isinstance(raw, dict):
+        return raw
+    s = str(raw).strip()
+    if not s:
+        return {}
+    try:
+        return json.loads(s)
+    except Exception:
+        return {}
+
+# -------------------------
+# Equipped JSON
+# -------------------------
+def equip_load(raw: str) -> Dict[str, Any]:
+    if isinstance(raw, dict):
+        d = raw
+    else:
+        s = str(raw or "").strip()
+        if not s:
+            d = {}
+        else:
+            try:
+                d = json.loads(s)
+            except Exception:
+                d = {}
+    # schema minimal
+    d.setdefault("player_weapon", "")
+    d.setdefault("player_armor", "")
+    d.setdefault("ally_weapon", "")
+    d.setdefault("ally_armor", "")
+    return d
+
+def equip_dump(equip: Dict[str, Any]) -> str:
+    try:
+        return json.dumps(equip or {}, ensure_ascii=False)
+    except Exception:
+        return "{}"
+
+def equip_set_slot(equip: Dict[str, Any], slot: str, item_id: str) -> Dict[str, Any]:
+    slot = (slot or "").strip()
+    equip = equip_load(equip)
+    equip[slot] = (item_id or "").strip()
+    return equip
+
+# -------------------------
+# Money helpers (si jamais)
+# -------------------------
+def player_money_get(row: Dict[str, Any]) -> int:
+    # si tu l'as déjà, ignore cette fonction
+    try:
+        return int(row.get("hunt_dollars", 0) or 0)
+    except Exception:
+        return 0
+
+def player_money_set(sheets, row_i: int, amount: int) -> None:
+    sheets.update_cell_by_header(T_PLAYERS, row_i, "hunt_dollars", str(int(amount)))
