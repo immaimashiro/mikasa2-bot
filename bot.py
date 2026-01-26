@@ -5,7 +5,7 @@ import os
 import io
 import traceback
 import asyncio
-from typing import Optional
+from typing import Optional, Any, Awaitable, Callable
 
 import discord
 from discord import app_commands
@@ -56,7 +56,12 @@ def attach_safe_error_handler(cmd: app_commands.Command):
         # Log console (important pour toi)
         print("🔥 ERREUR COMMANDE:", repr(error))
 
-
+def safe_group_command(group, *, name: str, description: str):
+    def decorator(func):
+        async def wrapped(interaction: discord.Interaction, *args: Any, **kwargs: Any):
+            return await func(interaction, *args, **kwargs)
+        return group.command(name=name, description=description)(wrapped)
+    return decorator
 
 def _safe_respond(interaction: discord.Interaction, content: str, *, ephemeral: bool = True):
     # util interne: répond sans "already responded"
