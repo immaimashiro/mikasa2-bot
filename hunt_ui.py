@@ -6,7 +6,7 @@ from discord import ui
 
 import hunt_services as hs
 import hunt_domain as hd
-from hunt_data import AVATARS, avatar_image_url, rarity_rank
+from hunt_data import AVATARS, get_avatar, avatar_image_url, rarity_rank, format_player_title
 
 from services import catify, now_iso
 
