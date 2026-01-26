@@ -503,6 +503,209 @@ def weighted_choice(items: List[Tuple[str, int]]) -> str:
             return val
     return items[-1][0] if items else ""
 
+# ---------- JSON helpers ----------
+def _json_load(s: str, default):
+    try:
+        if not s:
+            return default
+        return json.loads(s)
+    except Exception:
+        return default
+
+def inv_load(s: str) -> Dict[str, int]:
+    data = _json_load(s, {})
+    if not isinstance(data, dict):
+        return {}
+    out: Dict[str, int] = {}
+    for k, v in data.items():
+        try:
+            out[str(k)] = max(0, int(v))
+        except Exception:
+            pass
+    return out
+
+def inv_dump(inv: Dict[str, int]) -> str:
+    clean = {k: int(v) for k, v in inv.items() if int(v) > 0}
+    return json.dumps(clean, ensure_ascii=False)
+
+def inv_count(inv: Dict[str, int], item_id: str) -> int:
+    return int(inv.get(item_id, 0) or 0)
+
+def inv_add(inv: Dict[str, int], item_id: str, qty: int) -> None:
+    if qty <= 0:
+        return
+    inv[item_id] = int(inv.get(item_id, 0) or 0) + int(qty)
+
+def inv_remove(inv: Dict[str, int], item_id: str, qty: int) -> bool:
+    if qty <= 0:
+        return True
+    cur = int(inv.get(item_id, 0) or 0)
+    if cur < qty:
+        return False
+    newv = cur - qty
+    if newv <= 0:
+        inv.pop(item_id, None)
+    else:
+        inv[item_id] = newv
+    return True
+
+def equipped_load(s: str) -> Dict[str, Any]:
+    data = _json_load(s, {})
+    return data if isinstance(data, dict) else {}
+
+def equipped_dump(eq: Dict[str, Any]) -> str:
+    return json.dumps(eq or {}, ensure_ascii=False)
+
+# ---------- Rows with row index (robuste) ----------
+def _records_with_row_index(sheets, tab_name: str) -> List[Tuple[int, Dict[str, Any]]]:
+    """
+    Retourne [(row_index, record_dict)].
+    row_index = index Google Sheets (1-based). On suppose headers en row 1, donc data row starts at 2.
+    """
+    ws_fn = getattr(sheets, "ws", None)
+    if callable(ws_fn):
+        ws = ws_fn(tab_name)
+        values = ws.get_all_values()
+        if not values or len(values) < 2:
+            return []
+        headers = [h.strip() for h in values[0]]
+        out = []
+        for i, row in enumerate(values[1:], start=2):
+            if not any(cell.strip() for cell in row):
+                continue
+            rec = {headers[j]: (row[j] if j < len(row) else "") for j in range(len(headers))}
+            out.append((i, rec))
+        return out
+
+    # fallback: enumerate get_all_records (moins fiable si trous)
+    rows = sheets.get_all_records(tab_name) or []
+    out = []
+    for idx, r in enumerate(rows, start=2):
+        out.append((idx, r))
+    return out
+
+# ---------- Players ----------
+def get_player_row(sheets, discord_id: int) -> Tuple[Optional[int], Optional[Dict[str, Any]]]:
+    did = str(int(discord_id))
+    for row_i, r in _records_with_row_index(sheets, T_PLAYERS):
+        if str(r.get("discord_id", "")).strip() == did:
+            return row_i, r
+    return None, None
+
+def ensure_player(sheets, *, discord_id: int, vip_code: str, pseudo: str, is_employee: bool = False) -> Tuple[int, Dict[str, Any]]:
+    row_i, row = get_player_row(sheets, discord_id)
+    if row_i and row:
+        return row_i, row
+
+    payload = {
+        "discord_id": str(int(discord_id)),
+        "vip_code": (vip_code or "").strip(),
+        "pseudo": (pseudo or "").strip() or (vip_code or "").strip(),
+        "is_employee": "1" if is_employee else "0",
+        "avatar_tag": "",
+        "avatar_url": "",
+        "ally_tag": "",
+        "ally_url": "",
+        "level": "1",
+        "xp": "0",
+        "xp_total": "0",
+        "stats_hp": "10",
+        "stats_atk": "2",
+        "stats_def": "1",
+        "stats_per": "1",
+        "stats_cha": "1",
+        "stats_luck": "1",
+        "hunt_dollars": "0",
+        "heat": "0",
+        "jail_until": "",
+        "last_daily_date": "",
+        "weekly_week_key": "",
+        "weekly_wins": "0",
+        "total_runs": "0",
+        "total_wins": "0",
+        "total_deaths": "0",
+        "inventory_json": "{}",
+        "equipped_json": "{}",
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+    }
+    sheets.append_by_headers(T_PLAYERS, payload)
+    # re-fetch
+    row_i2, row2 = get_player_row(sheets, discord_id)
+    return int(row_i2 or 2), (row2 or payload)
+
+def player_set_avatar(sheets, row_i: int, *, tag: str, url: str) -> None:
+    sheets.update_cell_by_header(T_PLAYERS, row_i, "avatar_tag", (tag or "").strip())
+    sheets.update_cell_by_header(T_PLAYERS, row_i, "avatar_url", (url or "").strip())
+    sheets.update_cell_by_header(T_PLAYERS, row_i, "updated_at", now_iso())
+
+def player_money_get(row: Dict[str, Any]) -> int:
+    try:
+        return int(row.get("hunt_dollars", 0) or 0)
+    except Exception:
+        return 0
+
+def player_money_set(sheets, row_i: int, new_amount: int) -> None:
+    sheets.update_cell_by_header(T_PLAYERS, row_i, "hunt_dollars", str(max(0, int(new_amount))))
+    sheets.update_cell_by_header(T_PLAYERS, row_i, "updated_at", now_iso())
+
+def player_inv_get(row: Dict[str, Any]) -> Dict[str, int]:
+    return inv_load(str(row.get("inventory_json", "") or ""))
+
+def player_inv_set(sheets, row_i: int, inv: Dict[str, int]) -> None:
+    sheets.update_cell_by_header(T_PLAYERS, row_i, "inventory_json", inv_dump(inv))
+    sheets.update_cell_by_header(T_PLAYERS, row_i, "updated_at", now_iso())
+
+def player_eq_get(row: Dict[str, Any]) -> Dict[str, Any]:
+    return equipped_load(str(row.get("equipped_json", "") or ""))
+
+def player_eq_set(sheets, row_i: int, eq: Dict[str, Any]) -> None:
+    sheets.update_cell_by_header(T_PLAYERS, row_i, "equipped_json", equipped_dump(eq))
+    sheets.update_cell_by_header(T_PLAYERS, row_i, "updated_at", now_iso())
+
+# ---------- Items ----------
+def items_all(sheets) -> List[Dict[str, Any]]:
+    return sheets.get_all_records(T_ITEMS) or []
+
+def item_by_id(sheets, item_id: str) -> Optional[Dict[str, Any]]:
+    iid = (item_id or "").strip()
+    if not iid:
+        return None
+    for it in items_all(sheets):
+        if str(it.get("item_id", "")).strip() == iid:
+            return it
+    return None
+
+def item_price(it: Dict[str, Any]) -> int:
+    try:
+        return int(it.get("price", 0) or 0)
+    except Exception:
+        return 0
+
+# ---------- Keys (open) ----------
+def find_unopened_key_row(sheets, discord_id: int, key_type: Optional[str] = None) -> Tuple[Optional[int], Optional[Dict[str, Any]]]:
+    did = str(int(discord_id))
+    kt = (key_type or "").strip().lower()
+    for row_i, r in _records_with_row_index(sheets, T_KEYS):
+        if str(r.get("discord_id", "")).strip() != did:
+            continue
+        if str(r.get("opened_at", "")).strip():
+            continue
+        if kt and str(r.get("key_type", "")).strip().lower() != kt:
+            continue
+        return row_i, r
+    return None, None
+
+def log(sheets, *, discord_id: int, code_vip: str, kind: str, message: str, meta: Dict[str, Any] | None = None) -> None:
+    sheets.append_by_headers(T_LOG, {
+        "timestamp": now_iso(),
+        "discord_id": str(int(discord_id)),
+        "code_vip": (code_vip or "").strip(),
+        "kind": (kind or "").strip(),
+        "message": (message or "").strip(),
+        "meta_json": json.dumps(meta or {}, ensure_ascii=False),
+    })
+
 # ==========================================================
 # Loot table (simple, prêt pour shop/keys)
 # ==========================================================
