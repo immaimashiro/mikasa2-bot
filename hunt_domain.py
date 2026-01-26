@@ -10,6 +10,12 @@ import random
 import hunt_services as hs
 from services import now_fr, now_iso, normalize_code, display_name
 
+from hunt_data import rarity_rank
+
+EQUIP_SLOTS = {
+    "weapon": "weapon",
+    "armor": "armor",
+}
 
 # ==========================================================
 # AVATARS (Direction SubUrban)
@@ -473,6 +479,51 @@ def staff_claim_key_for_vip(
         key_type=key_type,
     )
 
+
+def is_equippable(item: Dict[str, Any]) -> bool:
+    t = str(item.get("type", "")).strip().lower()
+    return t in ("weapon", "armor")
+
+def equip_slot(item: Dict[str, Any]) -> Optional[str]:
+    t = str(item.get("type", "")).strip().lower()
+    return EQUIP_SLOTS.get(t)
+
+def loot_pick_from_items(items: List[Dict[str, Any]], *, key_type: str) -> Tuple[str, int, str, str]:
+    """
+    Retourne (item_id, qty, rarity, name)
+    key_type: "key" ou "gold_key"
+    """
+    # pool = items avec item_id
+    pool = [it for it in items if str(it.get("item_id", "")).strip()]
+    if not pool:
+        return ("", 0, "common", "")
+
+    # poids rarité
+    # normal: beaucoup common/uncommon
+    # gold: plus de rare/epic
+    if key_type == "gold_key":
+        weights = {"common": 35, "uncommon": 35, "rare": 18, "epic": 10, "legendary": 2}
+    else:
+        weights = {"common": 55, "uncommon": 30, "rare": 12, "epic": 3, "legendary": 0}
+
+    def w(it: Dict[str, Any]) -> int:
+        r = str(it.get("rarity", "common")).strip().lower()
+        return int(weights.get(r, 1))
+
+    chosen = random.choices(pool, weights=[w(it) for it in pool], k=1)[0]
+    iid = str(chosen.get("item_id", "")).strip()
+    name = str(chosen.get("name", iid)).strip()
+    rarity = str(chosen.get("rarity", "common")).strip().lower()
+
+    # qty par rarity (simple)
+    if rarity in ("legendary", "epic"):
+        qty = 1
+    elif rarity == "rare":
+        qty = random.choice([1, 1, 2])
+    else:
+        qty = random.choice([1, 2])
+
+    return (iid, qty, rarity, name)
 
 # ==========================================================
 # ENTRYPOINTS “COMMAND LOGIC” (utiles côté bot)
