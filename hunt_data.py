@@ -8,6 +8,7 @@ import random
 # ==========================================================
 # CONFIG
 # ==========================================================
+import os
 
 HUNT_CAMPAIGN_MAX_WEEK = 12
 
@@ -20,7 +21,16 @@ def format_player_title(player_name: str, avatar_tag: str) -> str:
     return f"{player_name} [{avatar_tag}]"
 
 # Mets ton raw github ici (ou charge depuis env)
-ASSET_BASE_URL = "https://raw.githubusercontent.com/immaimashiro/mikasa2-bot/main/"
+# ⚠️ Si ton repo GitHub est privé, Discord ne verra PAS ces images.
+ASSET_BASE_URL = os.getenv(
+    "HUNT_ASSET_BASE_URL",
+    "https://raw.githubusercontent.com/immaimashiro/mikasa2-bot/main/"
+).strip()
+
+def asset(path: str) -> str:
+    if not ASSET_BASE_URL:
+        return ""
+    return ASSET_BASE_URL.rstrip("/") + "/" + path.lstrip("/")
 
 @dataclass(frozen=True)
 class AvatarDef:
@@ -28,9 +38,6 @@ class AvatarDef:
     name: str
     image: str
     short: str
-
-def asset(path: str) -> str:
-    return ASSET_BASE_URL + path
 
 # Avatars jouables (direction)
 AVATARS: List[AvatarDef] = [
@@ -45,6 +52,20 @@ AVATAR_BY_TAG: Dict[str, AvatarDef] = {a.tag: a for a in AVATARS}
 
 def get_avatar(tag: str) -> Optional[AvatarDef]:
     return AVATAR_BY_TAG.get((tag or "").strip().upper())
+
+def avatar_image_url(tag: str) -> str:
+    a = get_avatar(tag)
+    return a.image if a else ""
+
+# tri de rareté (utile shop)
+RARITY_ORDER = ["common", "uncommon", "rare", "epic", "legendary"]
+
+def rarity_rank(r: str) -> int:
+    r = (r or "").strip().lower()
+    try:
+        return RARITY_ORDER.index(r)
+    except ValueError:
+        return 999
 
 # ==========================================================
 # AVATARS (Direction SubUrban)
