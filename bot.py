@@ -19,7 +19,7 @@ import domain
 import ui
 import hunt_services
 import hunt_ui
-
+import functools
 import hunt_services as hs
 import hunt_domain as hd
 import uuid
@@ -57,7 +57,8 @@ def attach_safe_error_handler(cmd: app_commands.Command):
         print("🔥 ERREUR COMMANDE:", repr(error))
 
 def safe_group_command(group, *, name: str, description: str):
-    def decorator(func):
+    def decorator(func: Callable[..., Awaitable]):
+        @functools.wraps(func)
         async def wrapped(interaction: discord.Interaction, *args: Any, **kwargs: Any):
             return await func(interaction, *args, **kwargs)
         return group.command(name=name, description=description)(wrapped)
