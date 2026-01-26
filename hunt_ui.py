@@ -906,186 +906,166 @@ class HuntInvUseButton(ui.Button):
         await interaction.followup.send(catify(f"🩹 **{name}** utilisé. {msg}"), ephemeral=True)
 
 class HuntInventoryView(ui.View):
-    def __init__(self, *, parent: "HuntHubView"):
+    def __init__(self, *, parent):
         super().__init__(timeout=10 * 60)
         self.parent = parent
         self.sheets = parent.sheets
         self.discord_id = parent.discord_id
         self.code_vip = parent.code_vip
         self.pseudo = parent.pseudo
-
-        self.mode: str = "list"  # list | preview | equip_confirm
         self.selected_item_id: Optional[str] = None
-        self.last_key_result: Optional[Dict[str, Any]] = None
 
-        self.inv_list: List[Tuple[str, int]] = []
-        self._reload_state()
-        self._rebuild()
+        self.add_item(HuntInvSelect(self))
 
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        return await self.parent.interaction_check(interaction)
-
-    def _reload_state(self):
+    def _reload(self):
         p_row_i, player = hs.get_player_row(self.sheets, self.discord_id)
-        player = player or self.parent.player or {}
-        inv = hs.inv_load(str(player.get("inventory_json", "")))
-
-        # inv dict -> list triée
-        items = []
-        if isinstance(inv, dict):
-            for k, v in inv.items():
-                try:
-                    q = int(v)
-                except Exception:
-                    q = 0
-                if q > 0:
-                    items.append((str(k), q))
-        items.sort(key=lambda t: t[0].lower())
-        self.inv_list = items
-
-    def _rebuild(self):
-        self.clear_items()
-
-        if self.mode == "list":
-            self.add_item(HuntInvOpenKeyButton(self))
-            self.add_item(HuntInventorySelect(self))  # si tu as un select inventory
-            self.add_item(HuntBackToHubButton(self.parent))
-            return
-
-        if self.mode == "key_confirm":
-            self.add_item(HuntKeyConfirmOpenButton(self))
-            self.add_item(HuntKeyCancelOpenButton(self))
-            self.add_item(HuntBackToHubButton(self.parent))
-            return
-
-        if self.mode == "key_result":
-            self.add_item(HuntInvBackButton(self))     # revient au list
-            self.add_item(HuntInvOpenKeyButton(self))  # ré-ouvrir
-            self.add_item(HuntBackToHubButton(self.parent))
-            return
-
-        if self.mode == "preview":
-            self.add_item(HuntInvEquipButton(self))
-            self.add_item(HuntInvUseButton(self))
-            self.add_item(HuntInvUnequipButton(self))
-            self.add_item(HuntInvBackButton(self))
-            self.add_item(HuntBackToHubButton(self.parent))
-            return
-
-        # preview d'un item inventaire (si tu as un mode preview)
-        self.add_item(HuntEquipButton(self))
-        self.add_item(HuntInvBackButton(self))
-        self.add_item(HuntBackToHubButton(self.parent))
-
+        items = self.sheets.get_all_records(hs.T_ITEMS)
+        items_by_id = {str(r.get("item_id","")).strip(): r for r in items}
+        return p_row_i, (player or {}), items_by_id
 
     def build_embed(self) -> discord.Embed:
-        p_row_i, player = hs.get_player_row(self.sheets, self.discord_id)
-        player = player or self.parent.player or {}
-        dollars = hs.player_money_get(player)
+        p_row_i, player, items_by_id = self._reload()
+        inv = hs.inv_load(str(player.get("inventory_json","")))
 
-        equip = hs.equip_load(str(player.get("equipped_json", "")))
-        inv = hs.inv_load(str(player.get("inventory_json", "")))
-        k1 = hs.inv_count(inv, "key")
-        k2 = hs.inv_count(inv, "gold_key")
+        ally_tag = str(player.get("ally_tag","")).strip().upper()
+        ewp = hs.equip_get(player, who="player", slot="weapon")
+        eap = hs.equip_get(player, who="player", slot="armor")
+        ewa = hs.equip_get(player, who="ally", slot="weapon")
+        eaa = hs.equip_get(player, who="ally", slot="armor")
 
-        wpn = (equip.get("player_weapon") or "").strip()
-        arm = (equip.get("player_armor") or "").strip()
-        
-        if self.mode == "list":
-            lines = []
-            for iid, qty in self.inv_list[:15]:
-                item = hs.item_get(self.sheets, iid) or {}
-                name = _safe_str(item.get("name")) or iid
-                lines.append(f"• **{name}** x{qty} (`{iid}`)")
-            if not lines:
-                lines = ["*Vide*"]
+        def item_name(iid: str) -> str:
+            if not iid:
+                return "—"
+            r = items_by_id.get(iid)
+            return str(r.get("name", iid)) if r else iid
 
-            e = discord.Embed(
-                title="🎒 HUNT Inventory",
-                description=(
-                    f"👤 **{self.pseudo}**\n"
-                    f"💰 Argent: **{_money(dollars)}$**\n"
-                    f"🗡️ Arme équipée: **{wpn or 'Aucune'}**\n"
-                    f"🛡️ Armure équipée: **{arm or 'Aucune'}**\n\n"
-                    f"🔑 Clés: **{k1}** | 🔑✨ Or: **{k2}**\n\n"
-                    "Sélectionne un item pour le voir et l’équiper."
-                ),
-                color=discord.Color.dark_purple()
-            )
-            e.add_field(name="Contenu", value="\n".join(lines), inline=False)
-            e.set_footer(text="Tout se met à jour ici. 🐾")
-            return e
-            
-        if self.mode == "key_confirm":
-            inv = hs.inv_load(str(player.get("inventory_json", "")))
-            k1 = hs.inv_count(inv, "key")
-            k2 = hs.inv_count(inv, "gold_key")
-            e = discord.Embed(
-                title="🔑 Ouvrir une clé",
-                description=(
-                    f"👤 **{self.pseudo}**\n"
-                    f"🔑 Clés: **{k1}** | 🔑✨ Or: **{k2}**\n\n"
-                    "Tu veux ouvrir **1 clé** maintenant ?\n"
-                    "Priorité: **clé or** si tu en as."
-                ),
-                color=discord.Color.blurple()
-            )
-            e.set_footer(text="Confirme et le loot tombe. 🐾")
-            return e
+        lines = []
+        # on liste seulement ce que tu as
+        for iid, qty in hs.inv_iter(inv):  # si tu n'as pas inv_iter => je te le fournis
+            if qty <= 0:
+                continue
+            r = items_by_id.get(iid, {})
+            nm = str(r.get("name", iid))
+            tp = str(r.get("type","")).upper()
+            lines.append(f"• `{iid}` **{nm}** x{qty}  ({tp})")
 
-        if self.mode == "key_result":
-            r = self.last_key_result or {}
-            key_type = str(r.get("key_type", "")).strip()
-            item_name = str(r.get("item_name", "")).strip() or str(r.get("item_id", "")).strip()
-            qty = int(r.get("qty", 0) or 0)
-            rarity = str(r.get("rarity", "")).strip()
-
-            e = discord.Embed(
-                title="🎁 Résultat de la clé",
-                description=(
-                    f"🔑 Type: **{key_type}**\n"
-                    f"✨ Rareté: **{rarity}**\n\n"
-                    f"Tu obtiens: **{item_name}** x**{qty}**"
-                ),
-                color=discord.Color.gold() if key_type == "gold_key" else discord.Color.green()
-            )
-            e.set_footer(text="Tu peux ré-ouvrir une clé ou revenir à l’inventaire. 🐾")
-            return e
-
-        # preview / equip_confirm
-        iid = (self.selected_item_id or "").strip()
-        item = hs.item_get(self.sheets, iid) or {}
-        name = _safe_str(item.get("name")) or iid
-        typ = _safe_str(item.get("type")) or "item"
-        rarity = _safe_str(item.get("rarity"))
-        desc = _safe_str(item.get("description"))
-        power = hs.item_power(item)
-        img = _safe_str(item.get("image_url"))
-
-        title = "🎒 Item"
-        if self.mode == "equip_confirm":
-            title = "🧷 Équiper (confirmation)"
+        desc = (
+            f"👤 **{self.pseudo}**\n"
+            f"🤝 Allié: **{ally_tag or 'Aucun'}**\n\n"
+            f"🗡️ Joueur: **{item_name(ewp)}** | 🛡️ **{item_name(eap)}**\n"
+            f"🗡️ Allié: **{item_name(wa := ewa)}** | 🛡️ **{item_name(eaa)}**\n\n"
+            f"🎯 Sélection: `{self.selected_item_id or '—'}`\n"
+        )
 
         e = discord.Embed(
-            title=f"{title}: {name}",
-            description=(
-                f"🆔 `{iid}`\n"
-                f"🏷️ Type: **{typ}**\n"
-                f"✨ Rareté: **{rarity}**\n\n"
-                f"**Effets**\n{_power_lines(power)}\n\n"
-                f"{desc if desc else ''}"
-            ).strip(),
+            title="🎒 Inventaire",
+            description=desc,
             color=discord.Color.blurple()
         )
-        if img:
-            e.set_image(url=img)
-
-        if self.mode == "preview":
-            e.set_footer(text="Équiper uniquement si arme/armure. 🐾")
-        else:
-            e.set_footer(text="Confirme pour équiper sur ton perso. 🐾")
-
+        e.add_field(name="Objets", value=("\n".join(lines) if lines else "*Vide*"), inline=False)
+        e.set_footer(text="Equipe ton joueur ou ton allié. 🐾")
         return e
+
+    async def refresh(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    def _selected_item_row(self, items_by_id: Dict[str, dict]) -> Optional[dict]:
+        if not self.selected_item_id:
+            return None
+        return items_by_id.get(self.selected_item_id)
+
+    @ui.button(label="🗡️ Equiper Joueur", style=discord.ButtonStyle.success)
+    async def btn_equip_player(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        p_row_i, player, items_by_id = self._reload()
+        r = self._selected_item_row(items_by_id)
+        if not r:
+            return await interaction.followup.send(catify("😾 Sélectionne un item."), ephemeral=True)
+
+        iid = str(r.get("item_id","")).strip()
+        tp = str(r.get("type","")).upper()
+
+        slot = "weapon" if "WEAPON" in tp else ("armor" if "ARMOR" in tp else "")
+        if not slot:
+            return await interaction.followup.send(catify("😾 Cet item n’est pas équipable."), ephemeral=True)
+
+        inv = hs.inv_load(str(player.get("inventory_json","")))
+        if hs.inv_count(inv, iid) <= 0:
+            return await interaction.followup.send(catify("😾 Tu n’as pas cet item."), ephemeral=True)
+
+        hs.equip_set(self.sheets, int(p_row_i), player, who="player", slot=slot, item_id=iid)
+
+        try:
+            await interaction.message.edit(embed=self.build_embed(), view=self)
+        except Exception:
+            pass
+        await interaction.followup.send(catify(f"✅ Equipé sur **joueur** ({slot})."), ephemeral=True)
+
+    @ui.button(label="🤝 Equiper Allié", style=discord.ButtonStyle.primary)
+    async def btn_equip_ally(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        p_row_i, player, items_by_id = self._reload()
+
+        ally_tag = str(player.get("ally_tag","")).strip().upper()
+        if not ally_tag:
+            return await interaction.followup.send(catify("😾 Tu n’as pas d’allié."), ephemeral=True)
+
+        r = self._selected_item_row(items_by_id)
+        if not r:
+            return await interaction.followup.send(catify("😾 Sélectionne un item."), ephemeral=True)
+
+        iid = str(r.get("item_id","")).strip()
+        tp = str(r.get("type","")).upper()
+
+        slot = "weapon" if "WEAPON" in tp else ("armor" if "ARMOR" in tp else "")
+        if not slot:
+            return await interaction.followup.send(catify("😾 Cet item n’est pas équipable."), ephemeral=True)
+
+        inv = hs.inv_load(str(player.get("inventory_json","")))
+        if hs.inv_count(inv, iid) <= 0:
+            return await interaction.followup.send(catify("😾 Tu n’as pas cet item."), ephemeral=True)
+
+        hs.equip_set(self.sheets, int(p_row_i), player, who="ally", slot=slot, item_id=iid)
+
+        try:
+            await interaction.message.edit(embed=self.build_embed(), view=self)
+        except Exception:
+            pass
+        await interaction.followup.send(catify(f"✅ Equipé sur **allié** ({slot})."), ephemeral=True)
+
+    @ui.button(label="↩️ Retour", style=discord.ButtonStyle.secondary)
+    async def btn_back(self, interaction: discord.Interaction, button: ui.Button):
+        await _edit(interaction, embed=self.parent.build_embed(), view=self.parent)
+
+
+class HuntInvSelect(ui.Select):
+    def __init__(self, view: HuntInventoryView):
+        # options rebuilt at runtime in callback (simple: keep placeholder options, update on refresh isn't necessary)
+        super().__init__(placeholder="Choisir un item...", min_values=1, max_values=1, options=[
+            discord.SelectOption(label="(Ouvrir inventaire)", value="__noop__")
+        ])
+        self.inv_view = view
+
+    async def callback(self, interaction: discord.Interaction):
+        # rebuild options each time user clicks (Discord limitation friendly)
+        p_row_i, player, items_by_id = self.inv_view._reload()
+        inv = hs.inv_load(str(player.get("inventory_json","")))
+
+        opts = []
+        for iid, qty in hs.inv_iter(inv):
+            if qty <= 0:
+                continue
+            r = items_by_id.get(iid, {})
+            nm = str(r.get("name", iid))
+            tp = str(r.get("type","")).upper()
+            opts.append(discord.SelectOption(label=f"{nm} x{qty}", value=iid, description=tp[:90]))
+
+        if not opts:
+            return await interaction.response.send_message(catify("😾 Inventaire vide."), ephemeral=True)
+
+        self.options = opts[:25]
+        self.inv_view.selected_item_id = self.values[0] if self.values else None
+        await self.inv_view.refresh(interaction)
 
 
 class HuntInvBackButton(ui.Button):
