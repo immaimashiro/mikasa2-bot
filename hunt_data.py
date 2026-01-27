@@ -295,3 +295,17 @@ def roll_direction_bonus_event() -> bool:
     Ex: chance de rencontrer un allié, loot amélioré, etc.
     """
     return random.random() < 0.50
+
+def avatar_image_url(avatar_tag: str) -> str:
+    """
+    Retourne l'URL d'image d'un avatar à partir de son tag.
+    Compatible avec hunt_ui.py.
+    """
+    av = get_avatar(avatar_tag)
+    if not av:
+        return ""
+    # On accepte plusieurs conventions de clé pour être robuste
+    return (
+        str(av.get("image_url") or av.get("url") or av.get("image") or "")
+        .strip()
+    )
