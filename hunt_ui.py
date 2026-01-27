@@ -105,7 +105,17 @@ class HuntHubView(ui.View):
             pseudo=self.pseudo,
             is_employee=self.is_employee
         )
+        self.p_row_i, self.player = hs.ensure_player(...)
 
+        # tentative ally permanente
+        try:
+            changed = hd.try_assign_permanent_ally(self.sheets, int(self.p_row_i), dict(self.player))
+            if changed:
+            # reload pour afficher direct
+                _, self.player = hs.get_player_row(self.sheets, self.discord_id)
+        except Exception:
+            pass
+    
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.discord_id:
             await interaction.response.send_message(catify("😾 Pas touche. Lance ton propre HUNT."), ephemeral=True)
@@ -498,6 +508,7 @@ class HuntShopView(ui.View):
         self.discord_id = parent.discord_id
         self.code_vip = parent.code_vip
         self.pseudo = parent.pseudo
+        self.mode = "NORMAL"  # ou "BLACK"
 
         self.active_tab: str = "NORMAL"          # "NORMAL" / "BLACK"
         self.selected_item_id: Optional[str] = None
@@ -536,6 +547,28 @@ class HuntShopView(ui.View):
         out.sort(key=keyf)
         return out
 
+    def _items_for_sale(self) -> List[Dict[str, Any]]:
+        items = hs.items_all(self.sheets)
+        sale = []
+        for it in items:
+            tp = str(it.get("type","")).upper()
+            is_black = tp.startswith("BM_")
+            if self.mode == "BLACK" and not is_black:
+                continue
+            if self.mode == "NORMAL" and is_black:
+                continue
+
+            try:
+                price = int(it.get("price", 0) or 0)
+            except Exception:
+                price = 0
+            if price > 0:
+                sale.append(it)
+
+        sale.sort(key=lambda it: (rarity_rank(str(it.get("rarity","common"))), hs.item_price(it), str(it.get("name",""))))
+        return sale
+
+
     def build_embed(self) -> discord.Embed:
         p_row_i, player, items = self._reload()
         dollars = hs.player_money_get(player)
@@ -561,6 +594,10 @@ class HuntShopView(ui.View):
             color=discord.Color.dark_purple()
         )
 
+        img = str(it.get("image_url","")).strip()
+        if img and self.mode != "BLACK":
+            e.set_thumbnail(url=img)
+
         # pas d’images pour le marché noir (ton souhait)
         if self.active_tab == "NORMAL":
             url = str(pick.get("image_url","")).strip() if pick else ""
@@ -584,6 +621,19 @@ class HuntShopView(ui.View):
         rows = self._filter_rows_for_tab(items)
         self.item_select.rebuild(rows)
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @ui.button(label="🛒 Shop normal", style=discord.ButtonStyle.secondary)
+    async def btn_tab_normal(self, interaction: discord.Interaction, button: ui.Button):
+        self.mode = "NORMAL"
+        self.selected_item_id = None
+        await _edit(interaction, embed=self.build_embed(), view=self)
+
+    @ui.button(label="🕶️ Marché noir", style=discord.ButtonStyle.secondary)
+    async def btn_tab_black(self, interaction: discord.Interaction, button: ui.Button):
+        self.mode = "BLACK"
+        self.selected_item_id = None
+        await _edit(interaction, embed=self.build_embed(), view=self)
+
 
     @ui.button(label="💸 Acheter", style=discord.ButtonStyle.success)
     async def btn_buy(self, interaction: discord.Interaction, button: ui.Button):
