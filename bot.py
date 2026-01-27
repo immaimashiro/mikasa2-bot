@@ -18,6 +18,7 @@ import services
 import domain
 import ui
 import hunt_services
+from hunt_services import ensure_player
 import hunt_ui
 import functools
 import hunt_services as hs
@@ -268,7 +269,7 @@ async def hunt_avatar(interaction: discord.Interaction):
     is_emp = is_employee(interaction.user)
 
     # ensure player
-    hd.ensure_player(
+    hunt_services.ensure_player(
         sheets,
         discord_id=interaction.user.id,
         vip_code=vip_code,
