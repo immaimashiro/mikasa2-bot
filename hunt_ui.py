@@ -671,7 +671,7 @@ class HuntAllyView(ui.View):
         # pick ally among direction excluding avatar
         candidates = [t for t in hd.list_avatar_tags() if t != avatar_tag]
         picked = random.choice(candidates)
-        img = hd.get_avatar_image(picked)
+        img = hda.get_avatar_image(picked)
 
         hs.player_set_ally(self.sheets, int(p_row_i), picked, img)
         hs.ally_change_week_key_set(self.sheets, int(p_row_i), player, week_key)
@@ -932,6 +932,8 @@ class HuntInventoryView(ui.View):
         eap = hs.equip_get(player, who="player", slot="armor")
         ewa = hs.equip_get(player, who="ally", slot="weapon")
         eaa = hs.equip_get(player, who="ally", slot="armor")
+        esp = hs.equip_get(player, who="player", slot="stim")
+        esa = hs.equip_get(player, who="ally", slot="stim")
 
         def item_name(iid: str) -> str:
             if not iid:
@@ -952,10 +954,11 @@ class HuntInventoryView(ui.View):
         desc = (
             f"👤 **{self.pseudo}**\n"
             f"🤝 Allié: **{ally_tag or 'Aucun'}**\n\n"
-            f"🗡️ Joueur: **{item_name(ewp)}** | 🛡️ **{item_name(eap)}**\n"
-            f"🗡️ Allié: **{item_name(wa := ewa)}** | 🛡️ **{item_name(eaa)}**\n\n"
+            f"🗡️ Joueur: **{item_name(ewp)}** | 🛡️ **{item_name(eap)}** | 💉 **{item_name(esp)}**\n"
+            f"🗡️ Allié: **{item_name(ewa)}** | 🛡️ **{item_name(eaa)}** | 💉 **{item_name(esa)}**\n\n"
             f"🎯 Sélection: `{self.selected_item_id or '—'}`\n"
         )
+
 
         e = discord.Embed(
             title="🎒 Inventaire",
@@ -985,9 +988,18 @@ class HuntInventoryView(ui.View):
         iid = str(r.get("item_id","")).strip()
         tp = str(r.get("type","")).upper()
 
-        slot = "weapon" if "WEAPON" in tp else ("armor" if "ARMOR" in tp else "")
+        if "STIM" in tp:
+            slot = "stim"
+        elif "WEAPON" in tp:
+            slot = "weapon"
+        elif "ARMOR" in tp:
+            slot = "armor"
+        else:
+            slot = ""
+
         if not slot:
             return await interaction.followup.send(catify("😾 Cet item n’est pas équipable."), ephemeral=True)
+
 
         inv = hs.inv_load(str(player.get("inventory_json","")))
         if hs.inv_count(inv, iid) <= 0:
@@ -1017,9 +1029,18 @@ class HuntInventoryView(ui.View):
         iid = str(r.get("item_id","")).strip()
         tp = str(r.get("type","")).upper()
 
-        slot = "weapon" if "WEAPON" in tp else ("armor" if "ARMOR" in tp else "")
+        if "STIM" in tp:
+            slot = "stim"
+        elif "WEAPON" in tp:
+            slot = "weapon"
+        elif "ARMOR" in tp:
+            slot = "armor"
+        else:
+            slot = ""
+
         if not slot:
             return await interaction.followup.send(catify("😾 Cet item n’est pas équipable."), ephemeral=True)
+
 
         inv = hs.inv_load(str(player.get("inventory_json","")))
         if hs.inv_count(inv, iid) <= 0:
