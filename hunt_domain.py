@@ -701,6 +701,49 @@ def loot_open_key(items: List[Dict[str, Any]], *, key_type: str) -> Dict[str, An
     qty = loot_compute_qty(it)
     return {"item_id": iid, "item_name": name, "qty": int(qty), "rarity": rarity, "key_type": kt}
 
+def weekly_score(row: dict) -> int:
+    import math
+    def gi(k): 
+        try: return int(row.get(k,0) or 0)
+        except Exception: return 0
+
+    wins = gi("wins")
+    good = gi("good_runs")
+    deaths = gi("deaths")
+    jail = gi("jail_count")
+    boss = gi("boss_kills")
+    steals = gi("steals")
+    dol = gi("earned_dollars")
+    xp = gi("earned_xp")
+
+    return (
+        10*wins +
+        2*good -
+        6*deaths -
+        3*jail +
+        8*boss +
+        4*steals +
+        (dol // 200) +
+        (xp // 50)
+    )
+
+def weekly_recompute_ranks(sheets, week_key: str):
+    rows = sheets.get_all_records("HUNT_WEEKLY")
+    wk = [r for r in rows if str(r.get("week_key","")).strip() == week_key]
+    for r in wk:
+        r["__score"] = weekly_score(r)
+
+    wk.sort(key=lambda r: (-int(r["__score"]), str(r.get("pseudo",""))))
+    # update score + rank
+    for idx, r in enumerate(wk, start=1):
+        discord_id = str(r.get("discord_id","")).strip()
+        # retrouve row index réel via un helper chez toi (id->row)
+        row_i = hs.weekly_row_index_by_discord_id(sheets, week_key, discord_id)  # à faire
+        if row_i:
+            sheets.update_cell_by_header("HUNT_WEEKLY", row_i, "score", int(r["__score"]))
+            sheets.update_cell_by_header("HUNT_WEEKLY", row_i, "top_rank", idx)
+            sheets.update_cell_by_header("HUNT_WEEKLY", row_i, "updated_at", hs.now_iso() if hasattr(hs, "now_iso") else "")
+
 # -------------------------------------------------
 # CONSUMABLE EFFECTS
 # -------------------------------------------------
