@@ -53,6 +53,11 @@ AVATAR_BY_TAG: Dict[str, AvatarDef] = {a.tag: a for a in AVATARS}
 def get_avatar(tag: str) -> Optional[AvatarDef]:
     return AVATAR_BY_TAG.get((tag or "").strip().upper())
 
+def pick_ally(exclude_tag: str) -> AvatarDef:
+    ex = (exclude_tag or "").strip().upper()
+    pool = [a for a in AVATARS if a.tag != ex]
+    return random.choice(pool) if pool else AVATARS[0]
+
 def get_avatar_image(tag: str) -> str:
     a = get_avatar(tag)
     return a.image if a else ""
