@@ -6,7 +6,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional, Tuple, List
 from datetime import datetime, timedelta
 import random
-
+import hunt_data as hda
 import hunt_services as hs
 from services import now_fr, now_iso, normalize_code, display_name
 
@@ -109,7 +109,45 @@ def set_avatar(
     sheets.update_cell_by_header(hs.T_PLAYERS, row_i, "updated_at", now_iso())
     return True, ""
 
+def try_assign_permanent_ally(sheets, p_row_i: int, player: dict) -> bool:
+    """
+    Donne un allié UNE FOIS (permanent) :
+    - seulement si pas d'allié déjà
+    - roll 50% si is_employee
+    - roll 10% sinon (tu peux ajuster)
+    - jamais le même que l'avatar_tag
+    - mémorise le roll dans equipped_json.meta.ally_roll_done
+    Retourne True si allié attribué.
+    """
+    ally_tag = str(player.get("ally_tag","")).strip().upper()
+    if ally_tag:
+        return False
 
+    if hs.meta_get(player, "ally_roll_done", False):
+        return False
+
+    is_emp = str(player.get("is_employee","0")).strip().lower() in ("1","true","yes")
+    chance = 0.50 if is_emp else 0.10
+
+    hs.meta_set(sheets, int(p_row_i), player, "ally_roll_done", True)
+
+    if random.random() > chance:
+        return False
+
+    avatar_tag = str(player.get("avatar_tag","")).strip().upper()
+    ally = hda.pick_ally(exclude_tag=avatar_tag)
+
+    sheets.update_cell_by_header("HUNT_PLAYERS", int(p_row_i), "ally_tag", ally.tag)
+    sheets.update_cell_by_header("HUNT_PLAYERS", int(p_row_i), "ally_url", ally.image)
+    sheets.update_cell_by_header("HUNT_PLAYERS", int(p_row_i), "updated_at", hs.now_iso() if hasattr(hs, "now_iso") else "")
+
+    hs.log(sheets,
+           discord_id=int(player.get("discord_id", 0) or 0),
+           code_vip=str(player.get("vip_code","") or ""),
+           kind="ally",
+           message=f"ally assigned {ally.tag}",
+           meta={"ally_tag": ally.tag, "chance": chance, "is_employee": is_emp})
+    return True
 # ==========================================================
 # JAIL (12h max)
 # ==========================================================
