@@ -168,90 +168,90 @@ class HuntHubView(ui.View):
         e.set_footer(text="Tout se met à jour ici. 🐾")
         return e
 
-        @ui.button(label="🎭 Choisir mon Avatar", style=discord.ButtonStyle.primary)
-        async def btn_avatar(self, interaction: discord.Interaction, button: ui.Button):
-            view = HuntAvatarView(parent=self)
-            await _edit(interaction, embed=view.build_embed(), view=view)
+    @ui.button(label="🎭 Choisir mon Avatar", style=discord.ButtonStyle.primary)
+    async def btn_avatar(self, interaction: discord.Interaction, button: ui.Button):
+        view = HuntAvatarView(parent=self)
+        await _edit(interaction, embed=view.build_embed(), view=view)
 
-        @ui.button(label="🛒 Shop", style=discord.ButtonStyle.secondary)
-        async def btn_shop(self, interaction: discord.Interaction, button: ui.Button):
-            view = HuntShopView(parent=self)
-            await _edit(interaction, embed=view.build_embed(), view=view)
+    @ui.button(label="🛒 Shop", style=discord.ButtonStyle.secondary)
+    async def btn_shop(self, interaction: discord.Interaction, button: ui.Button):
+        view = HuntShopView(parent=self)
+        await _edit(interaction, embed=view.build_embed(), view=view)
 
-        @ui.button(label="🎒 Inventory", style=discord.ButtonStyle.secondary)
-        async def btn_inv(self, interaction: discord.Interaction, button: ui.Button):
-            view = HuntInventoryView(parent=self)
-            await _edit(interaction, embed=view.build_embed(), view=view)
+    @ui.button(label="🎒 Inventory", style=discord.ButtonStyle.secondary)
+    async def btn_inv(self, interaction: discord.Interaction, button: ui.Button):
+        view = HuntInventoryView(parent=self)
+        await _edit(interaction, embed=view.build_embed(), view=view)
 
-        @ui.button(label="🤝 Chercher un allié (hebdo)", style=discord.ButtonStyle.primary)
-        async def btn_ally(self, interaction: discord.Interaction, button: ui.Button):
-            await interaction.response.defer(ephemeral=True)
+    @ui.button(label="🤝 Chercher un allié (hebdo)", style=discord.ButtonStyle.primary)
+    async def btn_ally(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.defer(ephemeral=True)
 
-        p_row_i, player = hs.get_player_row(self.sheets, self.discord_id)
-        if not p_row_i or not player:
-            return await interaction.followup.send(catify("😾 Profil introuvable."), ephemeral=True)
+    p_row_i, player = hs.get_player_row(self.sheets, self.discord_id)
+    if not p_row_i or not player:
+        return await interaction.followup.send(catify("😾 Profil introuvable."), ephemeral=True)
 
-        avatar_tag = str(player.get("avatar_tag", "")).strip().upper()
-        if not avatar_tag:
-            return await interaction.followup.send(catify("😾 Choisis d’abord ton avatar."), ephemeral=True)
+    avatar_tag = str(player.get("avatar_tag", "")).strip().upper()
+    if not avatar_tag:
+        return await interaction.followup.send(catify("😾 Choisis d’abord ton avatar."), ephemeral=True)
 
-        week_key = hs.hunt_week_key()  # utilise TON week_key (ISO ou Friday17). Idéal: unifier plus tard.
-        roll_wk = hs.ally_roll_week_key_get(player)
+    week_key = hs.hunt_week_key()  # utilise TON week_key (ISO ou Friday17). Idéal: unifier plus tard.
+    roll_wk = hs.ally_roll_week_key_get(player)
 
-        ally_tag, ally_url = hs.player_get_ally(player)
-        if ally_tag:
-            return await interaction.followup.send(catify(f"😼 Tu as déjà un allié: **{ally_tag}**."), ephemeral=True)
+    ally_tag, ally_url = hs.player_get_ally(player)
+    if ally_tag:
+        return await interaction.followup.send(catify(f"😼 Tu as déjà un allié: **{ally_tag}**."), ephemeral=True)
 
-        if roll_wk == week_key:
-            return await interaction.followup.send(catify("😾 Tu as déjà tenté de recruter un allié cette semaine."), ephemeral=True)
+    if roll_wk == week_key:
+        return await interaction.followup.send(catify("😾 Tu as déjà tenté de recruter un allié cette semaine."), ephemeral=True)
 
-        # --- chances ---
-        is_emp = str(player.get("is_employee", "0")).strip().lower() in ("1", "true", "yes")
-        chance = 0.50 if is_emp else 0.10  # non employés: rare
-        ok = (random.random() < chance)
+    # --- chances ---
+    is_emp = str(player.get("is_employee", "0")).strip().lower() in ("1", "true", "yes")
+    chance = 0.50 if is_emp else 0.10  # non employés: rare
+    ok = (random.random() < chance)
 
-        # on marque la tentative quoi qu'il arrive (anti-spam hebdo)
-        hs.ally_roll_week_key_set_with_row(self.sheets, int(p_row_i), player, week_key)
+    # on marque la tentative quoi qu'il arrive (anti-spam hebdo)
+    hs.ally_roll_week_key_set_with_row(self.sheets, int(p_row_i), player, week_key)
 
-        if not ok:
-            hs.log(self.sheets, discord_id=self.discord_id, code_vip=self.code_vip,
-                   kind="ally_roll", message="ally roll fail",
-                   meta={"week_key": week_key, "chance": chance})
-            # refresh hub UI
-            try:
-                await interaction.message.edit(embed=self.build_embed(), view=self)
-            except Exception:
-                pass
-            return await interaction.followup.send(catify("😾 Personne n’a répondu à l’appel cette semaine."), ephemeral=True)
-
-        # pick ally among direction, excluding player's avatar
-        tags = [t for t in hda.list_avatar_tags() if t != avatar_tag]
-        if not tags:
-            return await interaction.followup.send(catify("😾 Impossible de choisir un allié."), ephemeral=True)
-
-        picked = random.choice(tags)
-        img = hda.get_avatar_image(picked)
-
-        hs.player_set_ally(self.sheets, int(p_row_i), picked, img)
-        self.sheets.update_cell_by_header(hs.T_PLAYERS, int(p_row_i), "updated_at", now_iso())
-
+    if not ok:
         hs.log(self.sheets, discord_id=self.discord_id, code_vip=self.code_vip,
-               kind="ally_roll", message=f"ally recruited {picked}",
-               meta={"week_key": week_key, "chance": chance, "picked": picked})
-
-        # annonce publique (salon)
-        try:
-            await interaction.channel.send(f"📣 <@{self.discord_id}> a recruté un allié : **[{picked}]**")
-        except Exception:
-            pass
-
+                kind="ally_roll", message="ally roll fail",
+                meta={"week_key": week_key, "chance": chance})
         # refresh hub UI
         try:
             await interaction.message.edit(embed=self.build_embed(), view=self)
         except Exception:
             pass
+        return await interaction.followup.send(catify("😾 Personne n’a répondu à l’appel cette semaine."), ephemeral=True)
 
-        await interaction.followup.send(catify(f"✅ Un allié répond à l’appel: **{picked}**."), ephemeral=True)
+    # pick ally among direction, excluding player's avatar
+    tags = [t for t in hda.list_avatar_tags() if t != avatar_tag]
+    if not tags:
+        return await interaction.followup.send(catify("😾 Impossible de choisir un allié."), ephemeral=True)
+
+    picked = random.choice(tags)
+    img = hda.get_avatar_image(picked)
+
+    hs.player_set_ally(self.sheets, int(p_row_i), picked, img)
+    self.sheets.update_cell_by_header(hs.T_PLAYERS, int(p_row_i), "updated_at", now_iso())
+
+    hs.log(self.sheets, discord_id=self.discord_id, code_vip=self.code_vip,
+            kind="ally_roll", message=f"ally recruited {picked}",
+            meta={"week_key": week_key, "chance": chance, "picked": picked})
+
+    # annonce publique (salon)
+    try:
+        await interaction.channel.send(f"📣 <@{self.discord_id}> a recruté un allié : **[{picked}]**")
+    except Exception:
+        pass
+
+     # refresh hub UI
+    try:
+        await interaction.message.edit(embed=self.build_embed(), view=self)
+    except Exception:
+        pass
+
+    await interaction.followup.send(catify(f"✅ Un allié répond à l’appel: **{picked}**."), ephemeral=True)
 
     @ui.button(label="🤝 Mon allié", style=discord.ButtonStyle.primary)
     async def btn_ally_view(self, interaction: discord.Interaction, button: ui.Button):
