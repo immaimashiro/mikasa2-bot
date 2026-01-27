@@ -1053,6 +1053,12 @@ class HuntInventoryView(ui.View):
             r = items_by_id.get(iid, {})
             nm = str(r.get("name", iid))
             tp = str(r.get("type","")).upper()
+            slot = (
+                "weapon" if "WEAPON" in tp else
+                "armor"  if "ARMOR" in tp else
+                "stim"   if ("STIM" in tp or "MED" in tp) else
+                ""
+            )
             lines.append(f"• `{iid}` **{nm}** x{qty}  ({tp})")
 
         desc = (
