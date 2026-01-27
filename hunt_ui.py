@@ -122,8 +122,8 @@ class HuntHubView(ui.View):
             return False
         return True
 
-def build_embed(self) -> discord.Embed:
-        # reload player (safe)
+    def build_embed(self) -> discord.Embed:
+    # reload player (safe)
         row_i, row = hs.get_player_row(self.sheets, self.discord_id)
         row = row or self.player or {}
 
@@ -168,24 +168,24 @@ def build_embed(self) -> discord.Embed:
         e.set_footer(text="Tout se met à jour ici. 🐾")
         return e
 
-    @ui.button(label="🎭 Choisir mon Avatar", style=discord.ButtonStyle.primary)
-    async def btn_avatar(self, interaction: discord.Interaction, button: ui.Button):
-        view = HuntAvatarView(parent=self)
-        await _edit(interaction, embed=view.build_embed(), view=view)
+        @ui.button(label="🎭 Choisir mon Avatar", style=discord.ButtonStyle.primary)
+        async def btn_avatar(self, interaction: discord.Interaction, button: ui.Button):
+            view = HuntAvatarView(parent=self)
+            await _edit(interaction, embed=view.build_embed(), view=view)
 
-    @ui.button(label="🛒 Shop", style=discord.ButtonStyle.secondary)
-    async def btn_shop(self, interaction: discord.Interaction, button: ui.Button):
-        view = HuntShopView(parent=self)
-        await _edit(interaction, embed=view.build_embed(), view=view)
+        @ui.button(label="🛒 Shop", style=discord.ButtonStyle.secondary)
+        async def btn_shop(self, interaction: discord.Interaction, button: ui.Button):
+            view = HuntShopView(parent=self)
+            await _edit(interaction, embed=view.build_embed(), view=view)
 
-    @ui.button(label="🎒 Inventory", style=discord.ButtonStyle.secondary)
-    async def btn_inv(self, interaction: discord.Interaction, button: ui.Button):
-        view = HuntInventoryView(parent=self)
-        await _edit(interaction, embed=view.build_embed(), view=view)
+        @ui.button(label="🎒 Inventory", style=discord.ButtonStyle.secondary)
+        async def btn_inv(self, interaction: discord.Interaction, button: ui.Button):
+            view = HuntInventoryView(parent=self)
+            await _edit(interaction, embed=view.build_embed(), view=view)
 
-    @ui.button(label="🤝 Chercher un allié (hebdo)", style=discord.ButtonStyle.primary)
-    async def btn_ally(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.defer(ephemeral=True)
+        @ui.button(label="🤝 Chercher un allié (hebdo)", style=discord.ButtonStyle.primary)
+        async def btn_ally(self, interaction: discord.Interaction, button: ui.Button):
+            await interaction.response.defer(ephemeral=True)
 
         p_row_i, player = hs.get_player_row(self.sheets, self.discord_id)
         if not p_row_i or not player:
