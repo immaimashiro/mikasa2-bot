@@ -8,7 +8,7 @@ import hunt_data as hda  # ou le nom exact de ton fichier hunt_data.py
 
 import hunt_services as hs
 import hunt_domain as hd
-from hunt_data import AVATARS, get_avatar, avatar_image_url, rarity_rank, format_player_title
+from hunt_data import AVATARS, get_avatar, rarity_rank, format_player_title
 
 from services import catify, now_iso
 
@@ -244,7 +244,7 @@ def build_embed(self) -> discord.Embed:
         await interaction.followup.send(catify(f"✅ Un allié répond à l’appel: **{picked}**."), ephemeral=True)
 
     @ui.button(label="🤝 Mon allié", style=discord.ButtonStyle.primary)
-    async def btn_ally(self, interaction: discord.Interaction, button: ui.Button):
+    async def btn_ally_view(self, interaction: discord.Interaction, button: ui.Button):
         view = HuntAllyView(parent=self)
         await _edit(interaction, embed=view.build_embed(), view=view)
 
@@ -363,7 +363,9 @@ class HuntAvatarView(ui.View):
         )
 
         # image du perso sélectionné (ou actuel)
-        img = avatar_image_url(pick)
+        a = get_avatar(pick)
+        img = a.image if a else ""
+
         if img:
             e.set_image(url=img)
 
