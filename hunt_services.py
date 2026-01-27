@@ -6,7 +6,7 @@ import os
 import json
 import random
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Iterator
 from datetime import datetime, timedelta
 
 from services import (
@@ -96,7 +96,78 @@ H_REPUTATION = [
     "streak_days",
     "updated_at"
 ]
+# ---------- Inventory JSON ----------
+def inv_load(s: str) -> Dict[str, int]:
+    try:
+        d = json.loads(s or "{}")
+        if isinstance(d, dict):
+            out = {}
+            for k, v in d.items():
+                try:
+                    out[str(k)] = int(v)
+                except Exception:
+                    out[str(k)] = 0
+            return out
+    except Exception:
+        pass
+    return {}
 
+def inv_dump(inv: Dict[str, int]) -> str:
+    clean = {str(k): int(v) for k, v in (inv or {}).items() if int(v) > 0}
+    return json.dumps(clean, ensure_ascii=False)
+
+def inv_add(inv: Dict[str, int], item_id: str, qty: int) -> None:
+    item_id = (item_id or "").strip()
+    if not item_id:
+        return
+    inv[item_id] = max(0, int(inv.get(item_id, 0)) + int(qty))
+
+def inv_count(inv: Dict[str, int], item_id: str) -> int:
+    return int(inv.get((item_id or "").strip(), 0))
+
+def inv_iter(inv: Dict[str, int]) -> Iterator[Tuple[str, int]]:
+    # tri stable : qty desc puis id
+    for k, v in sorted(inv.items(), key=lambda kv: (-int(kv[1]), str(kv[0]))):
+        yield str(k), int(v)
+
+# ---------- Equipped JSON (+ meta) ----------
+def equip_load(s: str) -> Dict[str, Any]:
+    try:
+        d = json.loads(s or "{}")
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+def equip_dump(d: Dict[str, Any]) -> str:
+    return json.dumps(d or {}, ensure_ascii=False)
+
+def equip_get(player_row: dict, *, who: str, slot: str) -> str:
+    eq = equip_load(str(player_row.get("equipped_json","")))
+    return str(eq.get(who, {}).get(slot, "") or "").strip()
+
+def equip_set(sheets, row_i: int, player_row: dict, *, who: str, slot: str, item_id: str) -> None:
+    eq = equip_load(str(player_row.get("equipped_json","")))
+    eq.setdefault("player", {})
+    eq.setdefault("ally", {})
+    eq.setdefault("meta", {})
+    eq.setdefault(who, {})
+    eq[who][slot] = (item_id or "").strip()
+    sheets.update_cell_by_header("HUNT_PLAYERS", row_i, "equipped_json", equip_dump(eq))
+    sheets.update_cell_by_header("HUNT_PLAYERS", row_i, "updated_at", now_iso())
+
+def meta_get(player_row: dict, key: str, default=None):
+    eq = equip_load(str(player_row.get("equipped_json","")))
+    meta = eq.get("meta", {})
+    return meta.get(key, default)
+
+def meta_set(sheets, row_i: int, player_row: dict, key: str, value) -> None:
+    eq = equip_load(str(player_row.get("equipped_json","")))
+    eq.setdefault("player", {})
+    eq.setdefault("ally", {})
+    eq.setdefault("meta", {})
+    eq["meta"][key] = value
+    sheets.update_cell_by_header("HUNT_PLAYERS", row_i, "equipped_json", equip_dump(eq))
+    sheets.update_cell_by_header("HUNT_PLAYERS", row_i, "updated_at", now_iso())
 # ----------------------------
 # equipped_json helpers
 # ----------------------------
