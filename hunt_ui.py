@@ -112,42 +112,49 @@ class HuntHubView(ui.View):
             return False
         return True
 
-    def build_embed(self)
-        e = discord.Embed(
-            title="🧭 HUNT — Daily",
-            description="Choisis ton action.",
-            color=discord.Color.blurple()
-        )
+def build_embed(self) -> discord.Embed:
+        # reload player (safe)
         row_i, row = hs.get_player_row(self.sheets, self.discord_id)
-        row = row or self.player
-        dollars = hs.player_money_get(row)
-        avatar_tag = str(row.get("avatar_tag", "")).strip() or "?"
-        ally_tag = str(row.get("ally_tag", "")).strip()
-        if ally_tag:
-            e.add_field(name="🤝 Allié", value=f"**{ally_tag}**", inline=True)
-        else:
-            e.add_field(name="🤝 Allié", value="*Aucun*", inline=True)
-        wk = hs.week_key_friday_17h(now_fr()) if hasattr(hs, "week_key_friday_17h") else hs.hunt_week_key()
-        roll_wk = hs.ally_roll_week_key_get(row)
-        if roll_wk == wk and not ally_tag:
-            e.add_field(name="🎲 Recrutement", value="Tenté cette semaine (échec).", inline=True)
+        row = row or self.player or {}
 
-        e.add_field(name="🤝 Allié", value=(ally if ally else "Aucun"), inline=False)
+        dollars = hs.player_money_get(row)
+        avatar_tag = str(row.get("avatar_tag", "")).strip().upper() or "?"
+        avatar_url = str(row.get("avatar_url", "")).strip()
+
+        ally_tag = str(row.get("ally_tag", "")).strip().upper()
+        ally_url = str(row.get("ally_url", "")).strip()
+
+        # week key (safe)
+        try:
+            wk = hs.week_key_friday_17h(now_fr()) if hasattr(hs, "week_key_friday_17h") else hs.hunt_week_key()
+        except Exception:
+            wk = hs.hunt_week_key()
+
+        roll_wk = hs.ally_roll_week_key_get(row)
 
         e = discord.Embed(
-            title="🗺️ HUNT",
+            title="🗺️ HUNT — Hub",
             description=(
                 f"👤 **{self.pseudo}**\n"
                 f"🎴 VIP: `{self.code_vip}`\n"
-                f"🧍 Avatar: **{avatar_tag}**\n"
-                f"💰 Argent: **{_money(dollars)}**\n\n"
-                "Choisis une action :"
+                f"🧍 Avatar: **[{avatar_tag}]**\n"
+                f"💰 Argent: **{_money(dollars)}**\n"
             ),
             color=discord.Color.dark_purple()
         )
-        url = str(row.get("avatar_url", "")).strip()
-        if url:
-            e.set_thumbnail(url=url)
+
+        if avatar_url:
+            e.set_thumbnail(url=avatar_url)
+
+        if ally_tag:
+            e.add_field(name="🤝 Allié", value=f"**[{ally_tag}]**", inline=True)
+        else:
+            e.add_field(name="🤝 Allié", value="*Aucun*", inline=True)
+
+        # Info recrutement hebdo si déjà tenté et toujours aucun allié
+        if roll_wk == wk and not ally_tag:
+            e.add_field(name="🎲 Recrutement", value="Tenté cette semaine (échec).", inline=True)
+
         e.set_footer(text="Tout se met à jour ici. 🐾")
         return e
 
