@@ -112,7 +112,12 @@ class HuntHubView(ui.View):
             return False
         return True
 
-    def build_embed(self) -> discord.Embed:
+    def build_embed(self)
+        e = discord.Embed(
+            title="🧭 HUNT — Daily",
+            description="Choisis ton action.",
+            color=discord.Color.blurple()
+        )
         row_i, row = hs.get_player_row(self.sheets, self.discord_id)
         row = row or self.player
         dollars = hs.player_money_get(row)
