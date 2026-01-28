@@ -9,7 +9,7 @@ import json
 
 import hunt_data as hda
 import hunt_services as hs
-from services import now_fr, now_iso, normalize_code, display_name
+from services import SheetsService, now_fr, now_iso, normalize_code, display_name
 
 # ------------------------------------
 # Equip slots (alignés sur hs.equipped_json)
@@ -67,6 +67,60 @@ SCENES = [
     "Downtown. Les vitrines reflètent ton visage… et une silhouette derrière toi.",
 ]
 
+T_PLAYERS = "HUNT_PLAYERS"   # <-- adapte si ton onglet s'appelle autrement
+
+def get_player_row(s: SheetsService, discord_id: int) -> Tuple[Optional[int], Optional[Dict[str, Any]]]:
+    """
+    Retourne (row_index_sheet, player_dict) ou (None, None)
+    row_index_sheet est la ligne Sheets (start=2 car header ligne 1).
+    """
+    rows = s.get_all_records(T_PLAYERS)
+    for idx, r in enumerate(rows, start=2):
+        if str(r.get("discord_id", "")).strip() == str(discord_id):
+            return idx, r
+    return None, None
+
+def ensure_player(
+    s: SheetsService,
+    *,
+    discord_id: int,
+    vip_code: str,
+    pseudo: str,
+    is_employee: bool = False
+) -> Tuple[int, Dict[str, Any]]:
+    """
+    Crée le player s'il n'existe pas.
+    Colonnes attendues minimales dans HUNT_PLAYERS:
+    discord_id, vip_code, pseudo, is_employee, hp, hp_max, xp, xp_total,
+    hunt_dollars, inventory_json, state_json, last_daily_date, updated_at, created_at
+    """
+    row_i, row = get_player_row(s, discord_id)
+    if row_i and row:
+        return row_i, row
+
+    payload = {
+        "discord_id": str(discord_id),
+        "vip_code": str(vip_code),
+        "pseudo": str(pseudo),
+        "is_employee": "1" if is_employee else "0",
+        "hp": 100,
+        "hp_max": 100,
+        "xp": 0,
+        "xp_total": 0,
+        "hunt_dollars": 0,
+        "inventory_json": "{}",
+        "state_json": "",          # <- on va s'en servir pour le daily robuste
+        "last_daily_date": "",
+        "total_runs": 0,
+        "updated_at": now_iso(),
+        "created_at": now_iso(),
+    }
+    s.append_by_headers(T_PLAYERS, payload)
+
+    row_i2, row2 = get_player_row(s, discord_id)
+    if not row_i2 or not row2:
+        raise RuntimeError("ensure_player: impossible de relire la ligne créée.")
+    return row_i2, row2
 # ==========================================================
 # PLAYER HELPERS (alignés sur hs.ensure_player)
 # ==========================================================
