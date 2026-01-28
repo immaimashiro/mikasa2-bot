@@ -17,13 +17,14 @@ from services import SheetsService, S3Service, catify, display_name, normalize_c
 import services
 import domain
 import ui
-import hunt_services
-from hunt_services import ensure_player
-import hunt_ui
-import functools
+
 import hunt_services as hs
 import hunt_domain as hd
-import uuid
+import hunt_ui
+import hunt_data as hda
+
+import functools
+
 from datetime import datetime
 from services import now_fr, now_iso, normalize_code, display_name
 
@@ -286,9 +287,10 @@ async def hunt_avatar(interaction: discord.Interaction):
     )
 
     # thumbnail si déjà un avatar
-    _, player = hd.get_player_row(sheets, interaction.user.id)
+    _, player = hs.get_player_row(sheets, interaction.user.id)
     if player and str(player.get("avatar_url","")).strip():
         emb.set_thumbnail(url=str(player.get("avatar_url","")).strip())
+
 
     emb.set_footer(text="Mikasa prépare ton badge… 🐾")
     await interaction.followup.send(embed=emb, view=view, ephemeral=True)
@@ -1847,59 +1849,37 @@ def hunt_week_key(now=None) -> str:
 async def hunt_key_claim_cmd(interaction: discord.Interaction, vip_id: str):
     await defer_ephemeral(interaction)
 
-    vip_code = domain.normalize_code(vip_id)
+    vip_code = normalize_code(vip_id)
     row_i, vip = domain.find_vip_row_by_code(sheets, vip_code)
     if not row_i or not vip:
         return await interaction.followup.send("❌ VIP introuvable.", ephemeral=True)
 
-    did = str(vip.get("discord_id","")).strip()
+    did = str(vip.get("discord_id", "")).strip()
     if not did.isdigit():
         return await interaction.followup.send("❌ Ce VIP n’a pas de discord_id lié.", ephemeral=True)
 
-    discord_id = int(did)
+    target_discord_id = int(did)
 
-    # check player
-    p_row_i, player = hd.get_player_row(sheets, discord_id)
-    if not p_row_i or not player:
-        pseudo = domain.display_name(vip.get("pseudo", vip_code))
-        p_row_i, player = hd.ensure_player(
-            sheets, discord_id=discord_id, vip_code=vip_code, pseudo=pseudo, is_employee=False
-        )
+    # clé GOLD si employé (selon rôle staff qui claim ? ou selon statut du joueur ?)
+    # Ici: règle simple = si le VIP est employé dans HUNT_PLAYERS, sinon NORMAL
+    p_row_i, player = hs.get_player_row(sheets, target_discord_id)
+    is_emp_player = False
+    if player:
+        is_emp_player = str(player.get("is_employee", "")).strip().lower() in ("1", "true", "yes")
 
-    week_key = hunt_week_key()
+    key_type = "GOLD" if is_emp_player else "NORMAL"
 
-    # block if already claimed this week
-    rows = sheets.get_all_records(hunt_services.T_KEYS)
-    for r in rows:
-        if str(r.get("week_key","")).strip() == week_key and domain.normalize_code(str(r.get("vip_code",""))) == vip_code:
-            return await interaction.followup.send("😾 Une clé a déjà été claim pour ce VIP cette semaine.", ephemeral=True)
+    ok, msg = hs.claim_weekly_key(
+        sheets,
+        code_vip=vip_code,
+        discord_id=target_discord_id,
+        claimed_by=int(interaction.user.id),
+        key_type=key_type,
+    )
+    if not ok:
+        return await interaction.followup.send(msg, ephemeral=True)
 
-    # gold key if employee
-    is_emp = str(player.get("is_employee","0")).strip() in ("1","true","TRUE","yes","YES")
-    key_type = "gold_key" if is_emp else "key"
-
-    # add key to inventory
-    inv = hunt_services.inv_load(str(player.get("inventory_json","")))
-    hunt_services.inv_add(inv, key_type, 1)
-
-    sheets.update_cell_by_header(hunt_services.T_PLAYERS, p_row_i, "inventory_json", hunt_services.inv_dump(inv))
-    sheets.update_cell_by_header(hunt_services.T_PLAYERS, p_row_i, "updated_at", services.now_iso())
-
-    # log key
-    sheets.append_by_headers(hunt_services.T_KEYS, {
-        "week_key": week_key,
-        "vip_code": vip_code,
-        "discord_id": str(discord_id),
-        "key_type": key_type,
-        "claimed_by": str(interaction.user.id),
-        "claimed_at": services.now_iso(),
-        "opened_at": "",
-        "notes": "clé or employé" if is_emp else "clé standard",
-    })
-
-    # confirmation
-    label = hunt_services.LOOT_ITEMS.get(key_type, {"label": key_type})["label"]
-    await interaction.followup.send(f"✅ Clé attribuée à `{vip_code}` → **{label}**", ephemeral=True)
+    await interaction.followup.send(msg, ephemeral=True)
 
 
 #HUNT START
