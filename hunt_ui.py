@@ -1,110 +1,46 @@
 # hunt_ui.py
+# -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Optional, Dict, Any, List, Tuple
+
 import discord
 from discord import ui
 
-import hunt_services as hs
-import hunt_domain as hd
-import hunt_data as hda
+import hunt_rpg as rpg
+from services import catify, now_fr, now_iso
 
-from services import catify, now_iso
+# ==========================================================
+# Embeds helpers
+# ==========================================================
+def _mk_embed(
+    title: str,
+    desc: str,
+    *,
+    color: discord.Color = discord.Color.blurple(),
+    thumb: str = "",
+    footer: str = "",
+) -> discord.Embed:
+    e = discord.Embed(title=title, description=desc, color=color)
+    if thumb:
+        e.set_thumbnail(url=thumb)
+    if footer:
+        e.set_footer(text=footer)
+    return e
 
 
 # ==========================================================
-# Helpers (unique, pas de doublons)
+# HUNT HUB (optionnel)
+# - safe: Shop/Inventory placeholders pour éviter les crashs
 # ==========================================================
-
-def _money(n: Any) -> str:
-    try:
-        return f"{int(n):,}".replace(",", " ")
-    except Exception:
-        return "0"
-
-def format_player_title(player_name: str, avatar_tag: str) -> str:
-    player_name = (player_name or "").strip() or "Joueur"
-    avatar_tag = (avatar_tag or "").strip().upper()
-    return player_name if not avatar_tag else f"{player_name} [{avatar_tag}]"
-
-def _rarity_label(r: str) -> str:
-    r = (r or "").strip().upper()
-    return {
-        "COMMON": "Common",
-        "UNCOMMON": "Uncommon",
-        "RARE": "Rare",
-        "EPIC": "Epic",
-        "LEGENDARY": "Legendary",
-    }.get(r, r or "Common")
-
-def rarity_rank(r: str) -> int:
-    r = (r or "").strip().upper()
-    return {
-        "COMMON": 1,
-        "UNCOMMON": 2,
-        "RARE": 3,
-        "EPIC": 4,
-        "LEGENDARY": 5,
-    }.get(r, 99)
-
-async def _edit(interaction: discord.Interaction, *, content: Optional[str] = None, embed=None, view=None):
-    try:
-        if interaction.response.is_done():
-            await interaction.message.edit(content=content, embed=embed, view=view)
-        else:
-            await interaction.response.edit_message(content=content, embed=embed, view=view)
-    except Exception:
-        pass
-
-def _is_black_item(item: Dict[str, Any]) -> bool:
-    """
-    Marché noir:
-    - type commence par BLACK_
-    - OU item_id commence par bm_ / BM_
-    """
-    tp = str(item.get("type", "")).strip().upper()
-    iid = str(item.get("item_id", "")).strip().upper()
-    return tp.startswith("BLACK_") or iid.startswith("BM_")
-
-def _slot_from_item_type(tp: str) -> str:
-    tp = (tp or "").strip().upper()
-    if "STIM" in tp:
-        return "stim"
-    if "WEAPON" in tp:
-        return "weapon"
-    if "ARMOR" in tp:
-        return "armor"
-    return ""
-
-
-# ==========================================================
-# HUB (message unique, tout se fait dessus)
-# ==========================================================
-
 class HuntHubView(ui.View):
     def __init__(self, *, sheets, discord_id: int, code_vip: str, pseudo: str, is_employee: bool):
         super().__init__(timeout=10 * 60)
-        self.sheets = sheets
+        self.s = sheets
         self.discord_id = int(discord_id)
-        self.code_vip = (code_vip or "").strip()
-        self.pseudo = (pseudo or "").strip() or self.code_vip
+        self.code_vip = str(code_vip)
+        self.pseudo = str(pseudo)
         self.is_employee = bool(is_employee)
-
-        self.p_row_i, self.player = hs.ensure_player(
-            sheets,
-            discord_id=self.discord_id,
-            vip_code=self.code_vip,
-            pseudo=self.pseudo,
-            is_employee=self.is_employee
-        )
-
-        # Allié permanent: tentative silencieuse au chargement du hub
-        try:
-            changed = hd.try_assign_permanent_ally(self.sheets, int(self.p_row_i), dict(self.player or {}))
-            if changed:
-                _, self.player = hs.get_player_row(self.sheets, self.discord_id)
-        except Exception:
-            pass
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.discord_id:
@@ -113,599 +49,432 @@ class HuntHubView(ui.View):
         return True
 
     def build_embed(self) -> discord.Embed:
-        _, row = hs.get_player_row(self.sheets, self.discord_id)
-        row = row or self.player or {}
-
-        dollars = hs.player_money_get(row)
-        avatar_tag = str(row.get("avatar_tag", "")).strip().upper() or "?"
-        avatar_url = str(row.get("avatar_url", "")).strip()
-
-        ally_tag = str(row.get("ally_tag", "")).strip().upper()
-        ally_url = str(row.get("ally_url", "")).strip()
-
-        e = discord.Embed(
-            title="🗺️ HUNT — Hub",
-            description=(
-                f"👤 **{self.pseudo}**\n"
-                f"🎴 VIP: `{self.code_vip}`\n"
-                f"🧍 Avatar: **[{avatar_tag}]**\n"
-                f"💰 Argent: **{_money(dollars)}💵**\n"
-            ),
-            color=discord.Color.dark_purple()
+        desc = (
+            f"👤 <@{self.discord_id}> • 🎴 `{self.code_vip}`\n"
+            f"🪪 Pseudo: **{self.pseudo}**\n\n"
+            "Choisis une action :\n"
+            "• 🗺️ Daily RPG (multi-encounters)\n"
+            "• 🎒 Inventaire (placeholder)\n"
+            "• 🛒 Shop (placeholder)\n"
+        )
+        return _mk_embed(
+            "🧭 HUNT • Hub",
+            desc,
+            color=discord.Color.dark_purple(),
+            footer="Mikasa ouvre ton dossier… 🐾",
         )
 
-        if avatar_url:
-            e.set_thumbnail(url=avatar_url)
+    @ui.button(label="🗺️ Daily RPG", style=discord.ButtonStyle.primary)
+    async def btn_daily(self, interaction: discord.Interaction, button: ui.Button):
+        view = HuntDailyView(sheets=self.s, discord_id=self.discord_id, code_vip=self.code_vip, pseudo=self.pseudo)
+        await view.load()
+        await interaction.response.send_message(embed=view.build_embed(), view=view, ephemeral=True)
 
-        if ally_tag:
-            e.add_field(name="🤝 Allié", value=f"**[{ally_tag}]**", inline=True)
-        else:
-            e.add_field(name="🤝 Allié", value="*Aucun (pas de chance cette fois)*", inline=True)
-
-        if ally_url and ally_tag:
-            e.set_image(url=ally_url)
-
-        e.set_footer(text="Tout se met à jour ici. 🐾")
-        return e
-
-    @ui.button(label="🎭 Choisir mon Avatar", style=discord.ButtonStyle.primary)
-    async def btn_avatar(self, interaction: discord.Interaction, button: ui.Button):
-        view = HuntAvatarView(parent=self)
-        await _edit(interaction, embed=view.build_embed(), view=view)
+    @ui.button(label="🎒 Inventaire", style=discord.ButtonStyle.secondary)
+    async def btn_inv(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_message(
+            catify("🐾 Inventaire pas encore branché. On le reconnecte après le RPG."),
+            ephemeral=True,
+        )
 
     @ui.button(label="🛒 Shop", style=discord.ButtonStyle.secondary)
     async def btn_shop(self, interaction: discord.Interaction, button: ui.Button):
-        view = HuntShopView(parent=self)
-        await _edit(interaction, embed=view.build_embed(), view=view)
-
-    @ui.button(label="🎒 Inventory", style=discord.ButtonStyle.secondary)
-    async def btn_inv(self, interaction: discord.Interaction, button: ui.Button):
-        view = HuntInventoryView(parent=self)
-        await _edit(interaction, embed=view.build_embed(), view=view)
-
-    @ui.button(label="🤝 Mon allié", style=discord.ButtonStyle.primary)
-    async def btn_ally_view(self, interaction: discord.Interaction, button: ui.Button):
-        view = HuntAllyView(parent=self)
-        await _edit(interaction, embed=view.build_embed(), view=view)
+        await interaction.response.send_message(
+            catify("🐾 Shop pas encore branché. On le reconnecte après le RPG."),
+            ephemeral=True,
+        )
 
     @ui.button(label="✅ Fermer", style=discord.ButtonStyle.success)
     async def btn_close(self, interaction: discord.Interaction, button: ui.Button):
-        for it in self.children:
-            it.disabled = True
-        await _edit(interaction, content="✅ HUNT fermé.", embed=None, view=self)
+        for c in self.children:
+            c.disabled = True
+        await interaction.response.edit_message(content="✅ Hub fermé.", embed=None, view=self)
 
 
 # ==========================================================
-# AVATAR (Select + Confirm + annonce publique)
+# AVATAR UI (optionnel)
+# - si tu l'utilises dans /hunt avatar
 # ==========================================================
+AVATARS: List[Tuple[str, str]] = [
+    ("MAI", ""),
+    ("ROXY", ""),
+    ("DODO", ""),
+    ("THIB", ""),
+]
 
-class AvatarSelect(ui.Select):
+class HuntAvatarSelect(ui.Select):
     def __init__(self, view: "HuntAvatarView"):
-        options = []
-        for a in hda.AVATARS:
-            options.append(discord.SelectOption(
-                label=a.name,
-                value=a.tag,
-                description=a.short[:100],
-            ))
-        super().__init__(placeholder="Choisis ton avatar…", options=options, min_values=1, max_values=1)
+        opts = [discord.SelectOption(label=tag, value=tag) for tag, _ in AVATARS]
+        super().__init__(
+            placeholder="Choisis ton personnage…",
+            options=opts,
+            min_values=1,
+            max_values=1,
+        )
         self.v = view
 
     async def callback(self, interaction: discord.Interaction):
-        self.v.selected_tag = (self.values[0] or "").strip().upper()
-        await _edit(interaction, embed=self.v.build_embed(), view=self.v)
+        self.v.selected_tag = self.values[0]
+        await interaction.response.edit_message(embed=self.v.build_embed(), view=self.v)
 
+class HuntAvatarConfirm(ui.Button):
+    def __init__(self):
+        super().__init__(label="✅ Valider", style=discord.ButtonStyle.success)
+
+    async def callback(self, interaction: discord.Interaction):
+        v: HuntAvatarView = self.view  # type: ignore
+        if not v.selected_tag:
+            return await interaction.response.send_message(catify("😾 Choisis un perso d’abord."), ephemeral=True)
+
+        row_i, player = rpg.get_player_row(v.s, v.discord_id)
+        if not row_i or not player:
+            return await interaction.response.send_message("❌ Player introuvable.", ephemeral=True)
+
+        url = ""
+        for tag, u in AVATARS:
+            if tag == v.selected_tag:
+                url = u
+                break
+
+        v.s.update_cell_by_header(rpg.T_PLAYERS, row_i, "avatar_tag", v.selected_tag)
+        v.s.update_cell_by_header(rpg.T_PLAYERS, row_i, "avatar_url", url)
+        v.s.update_cell_by_header(rpg.T_PLAYERS, row_i, "updated_at", now_iso())
+
+        for c in v.children:
+            c.disabled = True
+
+        e = _mk_embed(
+            "✅ Avatar enregistré",
+            f"Ton tag est maintenant **[{v.selected_tag}]**.",
+            color=discord.Color.green(),
+            thumb=url,
+            footer="Mikasa colle ton badge. 🐾",
+        )
+        await interaction.response.edit_message(embed=e, view=v)
 
 class HuntAvatarView(ui.View):
-    def __init__(self, *, parent: HuntHubView):
-        super().__init__(timeout=10 * 60)
-        self.parent = parent
-        self.sheets = parent.sheets
-        self.discord_id = parent.discord_id
-        self.code_vip = parent.code_vip
-        self.pseudo = parent.pseudo
-        self.selected_tag: Optional[str] = None
-        self.confirmed = False
+    def __init__(self, *, author_id: int, sheets, discord_id: int):
+        super().__init__(timeout=5 * 60)
+        self.author_id = int(author_id)
+        self.discord_id = int(discord_id)
+        self.s = sheets
+        self.selected_tag: str = ""
 
-        self.add_item(AvatarSelect(self))
+        self.add_item(HuntAvatarSelect(self))
+        self.add_item(HuntAvatarConfirm())
+        self.add_item(HuntCloseButton(label="✅ Fermer"))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.discord_id:
-            await interaction.response.send_message(catify("😾 Pas touche. Lance ton propre /hunt."), ephemeral=True)
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(catify("😾 Pas touche."), ephemeral=True)
             return False
         return True
 
     def build_embed(self) -> discord.Embed:
-        _, row = hs.get_player_row(self.sheets, self.discord_id)
-        row = row or self.parent.player or {}
-
-        current = str(row.get("avatar_tag", "")).strip().upper() or "?"
-        pick = (self.selected_tag or current).strip().upper()
-
-        e = discord.Embed(
-            title="🎭 Choix d’Avatar",
-            description=(
-                f"👤 **{self.pseudo}**\n"
-                f"Actuel: **[{current}]**\n"
-                f"Sélection: **[{pick}]**\n\n"
-                "Choisis dans la liste, puis confirme."
-            ),
-            color=discord.Color.blurple()
+        desc = (
+            "Choisis un perso SubUrban.\n"
+            "Ton tag apparaîtra en **[MAI]**, **[ROXY]**, etc.\n\n"
+            + (f"Sélection: **{self.selected_tag}**" if self.selected_tag else "Sélection: *(aucune)*")
         )
+        return _mk_embed("🎭 Choix d’avatar", desc, color=discord.Color.purple(), footer="Mikasa sort la boîte d’étiquettes. 🐾")
 
-        img = hda.get_avatar_image(pick)
-        if img:
-            e.set_image(url=img)
 
-        if self.confirmed:
-            e.add_field(name="✅ Confirmé", value=f"Avatar défini sur **[{pick}]**", inline=False)
-            e.set_footer(text="Mikasa note ça dans le registre. 🐾")
-        else:
-            e.set_footer(text="Tu confirmes = c’est gravé. 🐾")
+# ==========================================================
+# DAILY RPG (multi-encounters) — UI complète
+# - se base sur hunt_rpg.py :
+#   - get_player_row
+#   - daily_begin_or_resume(...)
+#   - daily_apply_choice(...)
+#   - (daily_finalize est appelé par rpg quand fini)
+# ==========================================================
+CHOICES: List[Tuple[str, str, discord.ButtonStyle]] = [
+    ("🧭 Explorer",  "explore",    discord.ButtonStyle.secondary),
+    ("💬 Négocier",  "negotiate",  discord.ButtonStyle.primary),
+    ("⚔️ Attaquer",  "fight",      discord.ButtonStyle.danger),
+    ("🧤 Voler",     "steal",      discord.ButtonStyle.secondary),
+]
 
-        return e
+def _fmt_pending(p: Dict[str, Any]) -> str:
+    scene = str(p.get("scene", "rue"))
+    encounter = str(p.get("encounter", "inconnu"))
+    kind = str(p.get("kind", "ENEMY"))
+    diff = str(p.get("difficulty", "MED"))
+    return f"📍 **Paysage**: `{scene}`\n👁️ **Rencontre**: **{encounter}** ({kind}, {diff})"
 
-    @ui.button(label="✅ Confirmer", style=discord.ButtonStyle.success)
-    async def btn_confirm(self, interaction: discord.Interaction, button: ui.Button):
-        tag = (self.selected_tag or "").strip().upper()
-        if not tag:
-            return await interaction.response.send_message(catify("😾 Choisis un avatar d’abord."), ephemeral=True)
+def _fmt_step_bar(step: int, max_steps: int) -> str:
+    # 1..max
+    done = max(0, step - 1)
+    return "🧩 " + ("■" * done) + ("□" * max(0, max_steps - done)) + f"  ({done}/{max_steps})"
 
-        await interaction.response.defer(ephemeral=True)
+class HuntDailyView(ui.View):
+    """
+    View daily robuste:
+    - load() -> begin_or_resume (state_json créé/relancé)
+    - boutons -> apply_choice -> edit message + followup note
+    - si finished -> affiche un résumé et désactive les boutons
+    """
+    def __init__(self, *, sheets, discord_id: int, code_vip: str, pseudo: str):
+        super().__init__(timeout=12 * 60)
+        self.s = sheets
+        self.discord_id = int(discord_id)
+        self.code_vip = str(code_vip)
+        self.pseudo = str(pseudo)
 
-        row_i, row = hs.get_player_row(self.sheets, self.discord_id)
-        if not row_i or not row:
-            row_i, row = hs.ensure_player(
-                self.sheets,
-                discord_id=self.discord_id,
-                vip_code=self.code_vip,
-                pseudo=self.pseudo,
-                is_employee=self.parent.is_employee
-            )
+        self.player_row_i: Optional[int] = None
+        self.player: Optional[Dict[str, Any]] = None
+        self.state: Dict[str, Any] = {}
 
-        url = hda.get_avatar_image(tag)
-        hs.player_set_avatar(self.sheets, int(row_i), tag=tag, url=url)
+        self._busy = False  # anti double click
 
-        try:
-            title = format_player_title(self.pseudo, tag)
-            await interaction.channel.send(f"📣 **{title}** a choisi son avatar : **[{tag}]**")
-        except Exception:
-            pass
+        # boutons
+        for label, key, style in CHOICES:
+            self.add_item(HuntDailyChoiceButton(label=label, choice_key=key, style=style))
+        self.add_item(HuntDailyStatusButton())
+        self.add_item(HuntCloseButton(label="✅ Fermer"))
 
-        hs.log(
-            self.sheets,
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.discord_id:
+            await interaction.response.send_message(catify("😾 Pas touche. Lance ton propre Daily."), ephemeral=True)
+            return False
+        return True
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
+
+    async def load(self) -> None:
+        """
+        À appeler AVANT d'envoyer la view.
+        """
+        row_i, player, state = rpg.daily_begin_or_resume(
+            self.s,
             discord_id=self.discord_id,
-            code_vip=self.code_vip,
-            kind="avatar",
-            message=f"avatar set {tag}",
-            meta={"tag": tag, "url": url}
+            vip_code=self.code_vip,
+            pseudo=self.pseudo,
         )
-
-        self.confirmed = True
-        for it in self.children:
-            it.disabled = True
-
-        try:
-            await interaction.message.edit(embed=self.build_embed(), view=self)
-        except Exception:
-            pass
-
-        await interaction.followup.send(catify(f"✅ Avatar confirmé : **[{tag}]**"), ephemeral=True)
-
-    @ui.button(label="↩️ Retour", style=discord.ButtonStyle.secondary)
-    async def btn_back(self, interaction: discord.Interaction, button: ui.Button):
-        await _edit(interaction, embed=self.parent.build_embed(), view=self.parent)
-
-
-# ==========================================================
-# ALLY VIEW (permanent)
-# ==========================================================
-
-class HuntAllyView(ui.View):
-    def __init__(self, *, parent: HuntHubView):
-        super().__init__(timeout=10 * 60)
-        self.parent = parent
-        self.sheets = parent.sheets
-        self.discord_id = parent.discord_id
-        self.pseudo = parent.pseudo
+        self.player_row_i = row_i
+        self.player = player
+        self.state = state or {}
 
     def build_embed(self) -> discord.Embed:
-        _, row = hs.get_player_row(self.sheets, self.discord_id)
-        row = row or {}
+        st = self.state or {}
+        dk = str(st.get("date_key", ""))
+        arc = str(st.get("arc", ""))
+        step = int(st.get("step", 1) or 1)
+        max_steps = int(st.get("max_steps", 3) or 3)
+        hp = int(st.get("hp", 100) or 100)
+        hp_max = int(st.get("hp_max", 100) or 100)
+        pending = st.get("pending") or {}
 
-        ally_tag = str(row.get("ally_tag", "")).strip().upper()
-        ally_url = str(row.get("ally_url", "")).strip()
-
-        e = discord.Embed(
-            title="🤝 Ton allié",
-            description=("Aucun allié pour le moment." if not ally_tag else f"Allié: **[{ally_tag}]**"),
-            color=discord.Color.blurple()
-        )
-        if ally_url and ally_tag:
-            e.set_image(url=ally_url)
-        e.set_footer(text="Allié permanent. 🐾")
-        return e
-
-    @ui.button(label="↩️ Retour", style=discord.ButtonStyle.secondary)
-    async def btn_back(self, interaction: discord.Interaction, button: ui.Button):
-        await _edit(interaction, embed=self.parent.build_embed(), view=self.parent)
-
-
-# ==========================================================
-# SHOP (2 onglets : NORMAL / BLACK)
-# ==========================================================
-
-class ShopTabSelect(ui.Select):
-    def __init__(self, view: "HuntShopView"):
-        opts = [
-            discord.SelectOption(label="🛒 Shop normal", value="NORMAL", description="Objets clean, prix standards."),
-            discord.SelectOption(label="🕳️ Marché noir", value="BLACK", description="Plus fort, plus risqué, plus cher."),
-        ]
-        super().__init__(placeholder="Choisir une boutique…", options=opts, min_values=1, max_values=1)
-        self.v = view
-
-    async def callback(self, interaction: discord.Interaction):
-        self.v.active_tab = self.values[0]
-        self.v.selected_item_id = None
-        self.v._rebuild_item_select()
-        await _edit(interaction, embed=self.v.build_embed(), view=self.v)
-
-
-class ShopItemSelect(ui.Select):
-    def __init__(self, view: "HuntShopView"):
-        self.v = view
-        super().__init__(placeholder="Choisir un item…", options=[discord.SelectOption(label="(vide)", value="__none__")], min_values=1, max_values=1)
-
-    def set_options(self, rows: List[Dict[str, Any]]):
-        opts: List[discord.SelectOption] = []
-        for r in rows[:25]:
-            iid = str(r.get("item_id", "")).strip()
-            if not iid:
-                continue
-            nm = str(r.get("name", iid)).strip()[:90]
-            price = int(r.get("price", 0) or 0)
-            rarity = _rarity_label(str(r.get("rarity", "")))
-            tp = str(r.get("type", "")).strip().upper()
-
-            desc = f"{rarity} • {price}$ • {tp}"
-            opts.append(discord.SelectOption(label=nm, value=iid, description=desc[:100]))
-
-        if not opts:
-            opts = [discord.SelectOption(label="(vide)", value="__none__", description="Aucun item dispo.")]
-
-        self.options = opts
-        self.placeholder = "Choisir un item…"
-
-    async def callback(self, interaction: discord.Interaction):
-        iid = self.values[0]
-        if iid == "__none__":
-            return await interaction.response.defer(ephemeral=True)
-        self.v.selected_item_id = iid
-        await _edit(interaction, embed=self.v.build_embed(), view=self.v)
-
-
-class HuntShopView(ui.View):
-    def __init__(self, *, parent: HuntHubView):
-        super().__init__(timeout=10 * 60)
-        self.parent = parent
-        self.sheets = parent.sheets
-        self.discord_id = parent.discord_id
-        self.code_vip = parent.code_vip
-        self.pseudo = parent.pseudo
-
-        self.active_tab: str = "NORMAL"  # NORMAL / BLACK
-        self.selected_item_id: Optional[str] = None
-
-        self.tab_select = ShopTabSelect(self)
-        self.item_select = ShopItemSelect(self)
-        self.add_item(self.tab_select)
-        self.add_item(self.item_select)
-
-        self._rebuild_item_select()
-
-    def _reload(self):
-        p_row_i, player = hs.get_player_row(self.sheets, self.discord_id)
-        if not p_row_i or not player:
-            p_row_i, player = hs.ensure_player(
-                self.sheets,
-                discord_id=self.discord_id,
-                vip_code=self.code_vip,
-                pseudo=self.pseudo,
-                is_employee=self.parent.is_employee
+        # si jamais state vide (daily terminé/clear) -> message safe
+        if not st or not dk:
+            desc = (
+                f"👤 <@{self.discord_id}> • `{self.code_vip}`\n\n"
+                "✅ Daily terminé (ou non initialisé).\n"
+                "Relance la commande si besoin."
             )
-        items = self.sheets.get_all_records(hs.T_ITEMS)
-        return int(p_row_i), (player or {}), (items or [])
-
-    def _filter_rows(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        out = []
-        for r in items:
-            price = int(r.get("price", 0) or 0)
-            if price <= 0:
-                continue
-            if self.active_tab == "BLACK":
-                if _is_black_item(r):
-                    out.append(r)
-            else:
-                if not _is_black_item(r):
-                    out.append(r)
-
-        out.sort(key=lambda r: (rarity_rank(str(r.get("rarity", ""))), int(r.get("price", 0) or 0), str(r.get("name", ""))))
-        return out
-
-    def _rebuild_item_select(self):
-        _, _, items = self._reload()
-        rows = self._filter_rows(items)
-        self.item_select.set_options(rows)
-
-    def build_embed(self) -> discord.Embed:
-        _, player, items = self._reload()
-        dollars = hs.player_money_get(player)
-
-        rows = self._filter_rows(items)
-        by_id = {str(r.get("item_id", "")).strip(): r for r in rows}
-        pick = by_id.get(self.selected_item_id or "")
-
-        title = "🛒 Shop normal" if self.active_tab == "NORMAL" else "🕳️ Marché noir"
-        e = discord.Embed(
-            title=title,
-            description=(
-                f"👤 **{self.pseudo}** | 💰 **{_money(dollars)}💵**\n\n"
-                f"🎯 Sélection: `{self.selected_item_id or '—'}`\n"
-                "Sélectionne un item puis achète."
-            ),
-            color=discord.Color.dark_purple()
-        )
-
-        if pick:
-            name = str(pick.get("name", self.selected_item_id)).strip()
-            rarity = _rarity_label(str(pick.get("rarity", "")))
-            price = int(pick.get("price", 0) or 0)
-            desc = str(pick.get("description", "")).strip() or "*Aucune description*"
-            tp = str(pick.get("type", "")).strip()
-
-            e.add_field(
-                name=f"📦 {name}",
-                value=f"Type: `{tp}`\nRareté: **{rarity}**\nPrix: **{price}💵**\n\n{desc}",
-                inline=False
-            )
-
-            # IMPORTANT: PAS d'image pour le marché noir
-            if self.active_tab == "NORMAL":
-                img = str(pick.get("image_url", "")).strip()
-                if img:
-                    e.set_thumbnail(url=img)
-
-        preview = []
-        for r in rows[:10]:
-            iid = str(r.get("item_id", "")).strip()
-            nm = str(r.get("name", iid)).strip()
-            pr = int(r.get("price", 0) or 0)
-            preview.append(f"• `{iid}` **{nm}** — {pr}💵")
-        e.add_field(name="🧺 Articles (aperçu)", value=("\n".join(preview) if preview else "*Vide*"), inline=False)
-
-        e.set_footer(text="Achat = inventaire mis à jour direct. 🐾")
-        return e
-
-    async def _buy(self, interaction: discord.Interaction, qty: int):
-        await interaction.response.defer(ephemeral=True)
-
-        if not self.selected_item_id:
-            return await interaction.followup.send(catify("😾 Sélectionne un item."), ephemeral=True)
-
-        p_row_i, player, items = self._reload()
-        rows = self._filter_rows(items)
-        by_id = {str(r.get("item_id", "")).strip(): r for r in rows}
-        pick = by_id.get(self.selected_item_id)
-        if not pick:
-            return await interaction.followup.send(catify("😾 Item introuvable dans cet onglet."), ephemeral=True)
-
-        price = int(pick.get("price", 0) or 0)
-        total = price * int(qty)
-        dollars = hs.player_money_get(player)
-        if dollars < total:
-            return await interaction.followup.send(catify(f"😾 Pas assez d’argent. Il te manque **{_money(total - dollars)}💵**."), ephemeral=True)
-
-        inv = hs.player_inv_get(player)
-        hs.inv_add(inv, str(pick.get("item_id", "")).strip(), int(qty))
-        hs.player_inv_set(self.sheets, int(p_row_i), inv)
-        hs.player_money_set(self.sheets, int(p_row_i), dollars - total)
-
-        hs.log(self.sheets, discord_id=self.discord_id, code_vip=self.code_vip, kind="shop_buy",
-               message=f"buy {pick.get('item_id')} x{qty}", meta={"qty": qty, "cost": total, "tab": self.active_tab})
-
-        # refresh UI
-        self._rebuild_item_select()
-        try:
-            await interaction.message.edit(embed=self.build_embed(), view=self)
-        except Exception:
-            pass
-
-        await interaction.followup.send(catify(f"✅ Acheté **{pick.get('name')}** x{qty} pour **{total}💵**."), ephemeral=True)
-
-    @ui.button(label="🧾 Acheter x1", style=discord.ButtonStyle.success)
-    async def btn_buy1(self, interaction: discord.Interaction, button: ui.Button):
-        await self._buy(interaction, 1)
-
-    @ui.button(label="🧾 Acheter x5", style=discord.ButtonStyle.success)
-    async def btn_buy5(self, interaction: discord.Interaction, button: ui.Button):
-        await self._buy(interaction, 5)
-
-    @ui.button(label="↩️ Retour", style=discord.ButtonStyle.secondary)
-    async def btn_back(self, interaction: discord.Interaction, button: ui.Button):
-        await _edit(interaction, embed=self.parent.build_embed(), view=self.parent)
-
-
-# ==========================================================
-# INVENTORY (select + equip player/ally weapon/armor/stim)
-# ==========================================================
-
-class HuntInvSelect(ui.Select):
-    def __init__(self, view: "HuntInventoryView"):
-        self.v = view
-        super().__init__(placeholder="Choisir un item…", options=[discord.SelectOption(label="(chargement)", value="__none__")], min_values=1, max_values=1)
-        self._rebuild_options()
-
-    def _rebuild_options(self):
-        p_row_i, player, items_by_id = self.v._reload()
-        inv = hs.inv_load(str(player.get("inventory_json", "")))
-
-        opts: List[discord.SelectOption] = []
-        for iid, qty in hs.inv_iter(inv):
-            if qty <= 0:
-                continue
-            r = items_by_id.get(iid, {})
-            nm = str(r.get("name", iid)).strip()
-            tp = str(r.get("type", "")).strip().upper()
-            opts.append(discord.SelectOption(label=f"{nm} x{qty}"[:100], value=iid, description=tp[:100]))
-
-        if not opts:
-            opts = [discord.SelectOption(label="(Inventaire vide)", value="__none__", description="Va au shop.")]
-
-        self.options = opts[:25]
-        self.placeholder = "Choisir un item…"
-
-    async def callback(self, interaction: discord.Interaction):
-        iid = self.values[0]
-        if iid == "__none__":
-            return await interaction.response.send_message(catify("😾 Inventaire vide."), ephemeral=True)
-        self.v.selected_item_id = iid
-        await _edit(interaction, embed=self.v.build_embed(), view=self.v)
-
-
-class HuntInventoryView(ui.View):
-    def __init__(self, *, parent: HuntHubView):
-        super().__init__(timeout=10 * 60)
-        self.parent = parent
-        self.sheets = parent.sheets
-        self.discord_id = parent.discord_id
-        self.code_vip = parent.code_vip
-        self.pseudo = parent.pseudo
-        self.selected_item_id: Optional[str] = None
-
-        self.add_item(HuntInvSelect(self))
-
-    def _reload(self):
-        p_row_i, player = hs.get_player_row(self.sheets, self.discord_id)
-        if not p_row_i or not player:
-            p_row_i, player = hs.ensure_player(
-                self.sheets,
-                discord_id=self.discord_id,
-                vip_code=self.code_vip,
-                pseudo=self.pseudo,
-                is_employee=self.parent.is_employee
-            )
-        items = self.sheets.get_all_records(hs.T_ITEMS)
-        items_by_id = {str(r.get("item_id", "")).strip(): r for r in (items or [])}
-        return int(p_row_i), (player or {}), items_by_id
-
-    def build_embed(self) -> discord.Embed:
-        _, player, items_by_id = self._reload()
-        inv = hs.inv_load(str(player.get("inventory_json", "")))
-
-        ally_tag = str(player.get("ally_tag", "")).strip().upper()
-
-        ewp = hs.equip_get(player, who="player", slot="weapon")
-        eap = hs.equip_get(player, who="player", slot="armor")
-        esp = hs.equip_get(player, who="player", slot="stim")
-
-        ewa = hs.equip_get(player, who="ally", slot="weapon")
-        eaa = hs.equip_get(player, who="ally", slot="armor")
-        esa = hs.equip_get(player, who="ally", slot="stim")
-
-        def item_name(iid: str) -> str:
-            iid = (iid or "").strip()
-            if not iid:
-                return "—"
-            r = items_by_id.get(iid)
-            return str(r.get("name", iid)) if r else iid
-
-        lines = []
-        for iid, qty in hs.inv_iter(inv):
-            if qty <= 0:
-                continue
-            r = items_by_id.get(iid, {})
-            nm = str(r.get("name", iid))
-            tp = str(r.get("type", "")).upper()
-            lines.append(f"• `{iid}` **{nm}** x{qty}  ({tp})")
+            return _mk_embed("🗺️ Daily RPG", desc, color=discord.Color.green(), footer="Mikasa referme le carnet. 🐾")
 
         desc = (
-            f"👤 **{self.pseudo}**\n"
-            f"🤝 Allié: **{ally_tag or 'Aucun'}**\n\n"
-            f"🗡️ Joueur: **{item_name(ewp)}** | 🛡️ **{item_name(eap)}** | 💉 **{item_name(esp)}**\n"
-            f"🗡️ Allié: **{item_name(ewa)}** | 🛡️ **{item_name(eaa)}** | 💉 **{item_name(esa)}**\n\n"
-            f"🎯 Sélection: `{self.selected_item_id or '—'}`\n"
+            f"👤 <@{self.discord_id}> • `{self.code_vip}`\n"
+            f"🏷️ Arc: **{arc}**\n"
+            f"❤️ HP: **{hp}/{hp_max}**\n"
+            f"{_fmt_step_bar(step, max_steps)}\n\n"
+            f"{_fmt_pending(pending)}\n\n"
+            "Choisis une action. (Chaque clic est sauvegardé dans `state_json`.)"
+        )
+        e = _mk_embed(
+            f"🗺️ Daily RPG • {dk}",
+            desc,
+            color=discord.Color.blurple(),
+            footer="Aucun retour arrière. Mikasa note tout. 🐾",
         )
 
-        e = discord.Embed(title="🎒 Inventaire", description=desc, color=discord.Color.blurple())
-        e.add_field(name="Objets", value=("\n".join(lines) if lines else "*Vide*"), inline=False)
-        e.set_footer(text="Equipe ton joueur ou ton allié. 🐾")
+        # petit journal (2 dernières entrées)
+        logs = st.get("log") or []
+        if isinstance(logs, list) and logs:
+            last = logs[-2:] if len(logs) >= 2 else logs
+            lines = []
+            for x in last:
+                try:
+                    sstep = x.get("step", "?")
+                    res = x.get("result", "?")
+                    enc = x.get("encounter", "?")
+                    ch = x.get("choice", "?")
+                    lines.append(f"• #{sstep} **{enc}** → `{ch}` = **{res}**")
+                except Exception:
+                    continue
+            if lines:
+                e.add_field(name="📜 Derniers événements", value="\n".join(lines), inline=False)
+
         return e
 
-    def _selected_item_row(self, items_by_id: Dict[str, dict]) -> Optional[dict]:
-        if not self.selected_item_id:
-            return None
-        return items_by_id.get(self.selected_item_id)
+    async def _edit_message(self, interaction: discord.Interaction) -> None:
+        # rebuild: ici on ne change pas dynamiquement les items, on désactive seulement si fini
+        await interaction.message.edit(embed=self.build_embed(), view=self)
 
-    @ui.button(label="🗡️ Equiper Joueur", style=discord.ButtonStyle.success)
-    async def btn_equip_player(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        p_row_i, player, items_by_id = self._reload()
-
-        r = self._selected_item_row(items_by_id)
-        if not r:
-            return await interaction.followup.send(catify("😾 Sélectionne un item."), ephemeral=True)
-
-        iid = str(r.get("item_id", "")).strip()
-        tp = str(r.get("type", "")).strip().upper()
-        slot = _slot_from_item_type(tp)
-        if not slot:
-            return await interaction.followup.send(catify("😾 Cet item n’est pas équipable."), ephemeral=True)
-
-        inv = hs.inv_load(str(player.get("inventory_json", "")))
-        if hs.inv_count(inv, iid) <= 0:
-            return await interaction.followup.send(catify("😾 Tu n’as pas cet item."), ephemeral=True)
-
-        hs.equip_set(self.sheets, int(p_row_i), player, who="player", slot=slot, item_id=iid)
-
+    async def _disable_all(self, interaction: discord.Interaction, *, content: str = ""):
+        for item in self.children:
+            item.disabled = True
         try:
-            await interaction.message.edit(embed=self.build_embed(), view=self)
+            await interaction.message.edit(content=content or None, embed=self.build_embed(), view=self)
         except Exception:
             pass
 
-        await interaction.followup.send(catify(f"✅ Equipé sur **joueur** ({slot})."), ephemeral=True)
-
-    @ui.button(label="🤝 Equiper Allié", style=discord.ButtonStyle.primary)
-    async def btn_equip_ally(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        p_row_i, player, items_by_id = self._reload()
-
-        ally_tag = str(player.get("ally_tag", "")).strip().upper()
-        if not ally_tag:
-            return await interaction.followup.send(catify("😾 Tu n’as pas d’allié."), ephemeral=True)
-
-        r = self._selected_item_row(items_by_id)
-        if not r:
-            return await interaction.followup.send(catify("😾 Sélectionne un item."), ephemeral=True)
-
-        iid = str(r.get("item_id", "")).strip()
-        tp = str(r.get("type", "")).strip().upper()
-        slot = _slot_from_item_type(tp)
-        if not slot:
-            return await interaction.followup.send(catify("😾 Cet item n’est pas équipable."), ephemeral=True)
-
-        inv = hs.inv_load(str(player.get("inventory_json", "")))
-        if hs.inv_count(inv, iid) <= 0:
-            return await interaction.followup.send(catify("😾 Tu n’as pas cet item."), ephemeral=True)
-
-        hs.equip_set(self.sheets, int(p_row_i), player, who="ally", slot=slot, item_id=iid)
+    async def apply_choice(self, interaction: discord.Interaction, choice_key: str):
+        if self._busy:
+            return await interaction.followup.send(catify("😾 Doucement. Un choix est déjà en cours…"), ephemeral=True)
+        self._busy = True
 
         try:
-            await interaction.message.edit(embed=self.build_embed(), view=self)
-        except Exception:
-            pass
+            if self.player_row_i is None or self.player is None:
+                # sécurité si load() pas appelé
+                await self.load()
 
-        await interaction.followup.send(catify(f"✅ Equipé sur **allié** ({slot})."), ephemeral=True)
+            # si state vide -> refuse propre
+            if not self.state or not self.state.get("date_key"):
+                return await interaction.followup.send(catify("😾 Daily indisponible. Relance la commande."), ephemeral=True)
 
-    @ui.button(label="↩️ Retour", style=discord.ButtonStyle.secondary)
-    async def btn_back(self, interaction: discord.Interaction, button: ui.Button):
-        await _edit(interaction, embed=self.parent.build_embed(), view=self.parent)
+            # exécute la logique rpg
+            new_state, outcome = rpg.daily_apply_choice(
+                self.s,
+                player_row_i=int(self.player_row_i),
+                player=self.player,
+                state=self.state,
+                discord_id=self.discord_id,
+                choice=choice_key,
+            )
+
+            # daily_apply_choice peut retourner {} si terminé (state cleared)
+            finished = bool(outcome.get("finished")) if isinstance(outcome, dict) else False
+
+            if finished:
+                # on marque localement pour afficher un résumé propre
+                self.state = {}  # state cleared côté sheet déjà
+                summary = self._build_finished_embed(outcome)
+                await self._disable_all(interaction, content="")
+                await interaction.message.edit(embed=summary, view=self)
+
+                # followup
+                return await interaction.followup.send(
+                    catify("✅ Daily terminé. Récompenses créditées."),
+                    ephemeral=True,
+                )
+
+            # sinon: update state local + refresh embed
+            self.state = new_state or self.state
+
+            # message note
+            note = self._format_outcome_line(outcome)
+
+            # edit message principal
+            try:
+                await self._edit_message(interaction)
+            except Exception:
+                pass
+
+            await interaction.followup.send(note, ephemeral=True)
+
+        except Exception as e:
+            await interaction.followup.send(catify(f"❌ Erreur: {type(e).__name__}\n{e}"), ephemeral=True)
+        finally:
+            self._busy = False
+
+    def _format_outcome_line(self, outcome: Dict[str, Any]) -> str:
+        res = str(outcome.get("result", ""))
+        hp_delta = int(outcome.get("hp_delta", 0) or 0)
+        money = int(outcome.get("money_delta", 0) or 0)
+        xp = int(outcome.get("xp_delta", 0) or 0)
+        jail = int(outcome.get("jail_hours", 0) or 0)
+        score = outcome.get("score", None)
+        target = outcome.get("target", None)
+
+        parts = [("✅" if res == "WIN" else "❌") + f" Résultat: **{res}**"]
+        if score is not None and target is not None:
+            parts.append(f"🎲 Score: **{score}** / cible **{target}**")
+        if hp_delta:
+            parts.append(f"❤️ HP: **{hp_delta:+d}**")
+        parts.append(f"💵 +{money} $HUNT")
+        parts.append(f"✨ +{xp} XP")
+        if jail > 0:
+            parts.append(f"🚓 Jail: **{jail}h**")
+        return "\n".join(parts)
+
+    def _build_finished_embed(self, outcome: Dict[str, Any]) -> discord.Embed:
+        money = int(outcome.get("money_total", 0) or 0)
+        xp = int(outcome.get("xp_total", 0) or 0)
+        jail = int(outcome.get("jail_hours", 0) or 0)
+        hp_end = int(outcome.get("hp_end", 0) or 0)
+        arc = str(outcome.get("arc", ""))
+        boss_next = str(outcome.get("boss_next", ""))
+
+        desc = (
+            f"👤 <@{self.discord_id}> • `{self.code_vip}`\n"
+            f"🏷️ Arc: **{arc}**\n\n"
+            f"💵 Gain total: **+{money}** $HUNT\n"
+            f"✨ XP total: **+{xp}**\n"
+            f"❤️ HP fin: **{hp_end}**\n"
+            + (f"🚓 Jail: **{jail}h**\n" if jail > 0 else "")
+            + (f"\n👑 Boss lié à l’arc: **{boss_next}**" if boss_next else "")
+        )
+
+        e = _mk_embed(
+            "✅ Daily RPG terminé",
+            desc,
+            color=discord.Color.green(),
+            footer="Mikasa tamponne la feuille de route. 🐾",
+        )
+        return e
+
+
+class HuntDailyChoiceButton(ui.Button):
+    def __init__(self, *, label: str, choice_key: str, style: discord.ButtonStyle):
+        super().__init__(label=label, style=style)
+        self.choice_key = choice_key
+
+    async def callback(self, interaction: discord.Interaction):
+        view: HuntDailyView = self.view  # type: ignore
+        # ACK unique: defer, puis followup + message.edit
+        await interaction.response.defer(ephemeral=True)
+        await view.apply_choice(interaction, self.choice_key)
+
+
+class HuntDailyStatusButton(ui.Button):
+    """
+    Petit bouton “📌 Status” : renvoie le state_json actuel (résumé) en ephemeral
+    Utile pour debug si tu veux vérifier que state_json se remplit bien.
+    """
+    def __init__(self):
+        super().__init__(label="📌 Status", style=discord.ButtonStyle.secondary)
+
+    async def callback(self, interaction: discord.Interaction):
+        view: HuntDailyView = self.view  # type: ignore
+        await interaction.response.defer(ephemeral=True)
+
+        if view.player_row_i is None:
+            return await interaction.followup.send("❌ State non chargé.", ephemeral=True)
+
+        # relis la ligne player pour afficher le state_json brut (coupé)
+        row_i, player = rpg.get_player_row(view.s, view.discord_id)
+        if not row_i or not player:
+            return await interaction.followup.send("❌ Player introuvable.", ephemeral=True)
+
+        raw = str(player.get("state_json", "") or "")
+        if not raw.strip():
+            return await interaction.followup.send("✅ state_json vide (daily terminé ou non lancé).", ephemeral=True)
+
+        txt = raw if len(raw) <= 1500 else (raw[:1500] + "…")
+        await interaction.followup.send(f"```json\n{txt}\n```", ephemeral=True)
+
+
+# ==========================================================
+# Bouton fermer générique
+# ==========================================================
+class HuntCloseButton(ui.Button):
+    def __init__(self, *, label: str = "✅ Fermer"):
+        super().__init__(label=label, style=discord.ButtonStyle.success)
+
+    async def callback(self, interaction: discord.Interaction):
+        for c in self.view.children:
+            c.disabled = True
+        await interaction.response.edit_message(content="✅ Fermé.", embed=None, view=self.view)
