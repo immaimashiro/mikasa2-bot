@@ -1,14 +1,15 @@
 # hunt_data.py
 # -*- coding: utf-8 -*-
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 import random
+import os
 
 # ==========================================================
 # CONFIG
 # ==========================================================
-import os
 
 HUNT_CAMPAIGN_MAX_WEEK = 12
 
@@ -16,9 +17,7 @@ HUNT_CAMPAIGN_MAX_WEEK = 12
 def format_player_title(player_name: str, avatar_tag: str) -> str:
     player_name = (player_name or "").strip() or "Joueur"
     avatar_tag = (avatar_tag or "").strip().upper()
-    if not avatar_tag:
-        return player_name
-    return f"{player_name} [{avatar_tag}]"
+    return player_name if not avatar_tag else f"{player_name} [{avatar_tag}]"
 
 # Mets ton raw github ici (ou charge depuis env)
 # ⚠️ Si ton repo GitHub est privé, Discord ne verra PAS ces images.
@@ -32,6 +31,11 @@ def asset(path: str) -> str:
         return ""
     return ASSET_BASE_URL.rstrip("/") + "/" + path.lstrip("/")
 
+
+# ==========================================================
+# AVATARS (Direction)
+# ==========================================================
+
 @dataclass(frozen=True)
 class AvatarDef:
     tag: str
@@ -39,7 +43,6 @@ class AvatarDef:
     image: str
     short: str
 
-# Avatars jouables (direction)
 AVATARS: List[AvatarDef] = [
     AvatarDef(tag="MAI",   name="Mai Mashiro",  image=asset("Mai.png"),   short="Froide, efficace. Bonus ATK."),
     AvatarDef(tag="ROXY",  name="Roxy",         image=asset("Roxy.png"),  short="Agressive. Gros dégâts, +heat possible."),
@@ -53,33 +56,28 @@ AVATAR_BY_TAG: Dict[str, AvatarDef] = {a.tag: a for a in AVATARS}
 def get_avatar(tag: str) -> Optional[AvatarDef]:
     return AVATAR_BY_TAG.get((tag or "").strip().upper())
 
+def get_avatar_image(tag: str) -> str:
+    a = get_avatar(tag)
+    return a.image if a else ""
+
+# Alias compat (si tu appelles encore avatar_image_url ailleurs)
+def avatar_image_url(tag: str) -> str:
+    return get_avatar_image(tag)
+
+def list_avatar_tags() -> List[str]:
+    return [a.tag for a in AVATARS]
+
 def pick_ally(exclude_tag: str) -> AvatarDef:
     ex = (exclude_tag or "").strip().upper()
     pool = [a for a in AVATARS if a.tag != ex]
     return random.choice(pool) if pool else AVATARS[0]
 
-def get_avatar_image(tag: str) -> str:
-    a = get_avatar(tag)
-    return a.image if a else ""
-
-def list_avatar_tags() -> List[str]:
-    return [a.tag for a in AVATARS]
-
-# tri de rareté (utile shop)
-RARITY_ORDER = ["common", "uncommon", "rare", "epic", "legendary"]
-
-def rarity_rank(r: str) -> int:
-    r = (r or "").strip().lower()
-    try:
-        return RARITY_ORDER.index(r)
-    except ValueError:
-        return 999
 
 # ==========================================================
-# AVATARS (Direction SubUrban)
+# Direction tags / labels
 # ==========================================================
 
-DIRECTION_TAGS = ["MAI", "ROXY", "LYA", "ZACKO", "DRACO"]
+DIRECTION_TAGS = [a.tag for a in AVATARS]
 
 DIRECTION_LABELS = {
     "MAI": "Mai",
@@ -95,10 +93,6 @@ def avatar_label(tag: str) -> str:
 
 def pick_random_avatar_tag() -> str:
     return random.choice(DIRECTION_TAGS)
-
-# ==========================================================
-# ALLIÉS (rencontres direction)
-# ==========================================================
 
 def pick_direction_ally(exclude_tags: List[str]) -> str:
     """
@@ -116,6 +110,11 @@ def pick_direction_ally(exclude_tags: List[str]) -> str:
     if not pool:
         pool = DIRECTION_TAGS[:]
     return random.choice(pool)
+
+
+# ==========================================================
+# LINES alliés
+# ==========================================================
 
 ALLY_LINES = {
     "MAI": [
@@ -145,6 +144,30 @@ def ally_intro_line(tag: str) -> str:
     arr = ALLY_LINES.get(tag) or ["Un allié surgit, silencieux."]
     return random.choice(arr)
 
+
+# ==========================================================
+# Raretés (robuste: accepte COMMON ou common)
+# ==========================================================
+
+# Pour trier en shop: plus petit = plus commun
+RARITY_RANK_MAP = {
+    "COMMON": 1, "UNCOMMON": 2, "RARE": 3, "EPIC": 4, "LEGENDARY": 5,
+    "common": 1, "uncommon": 2, "rare": 3, "epic": 4, "legendary": 5,
+}
+
+def rarity_rank(r: str) -> int:
+    r = (r or "").strip()
+    if not r:
+        return 99
+    # on tente direct + fallback uppercase/lowercase
+    return (
+        RARITY_RANK_MAP.get(r)
+        or RARITY_RANK_MAP.get(r.upper())
+        or RARITY_RANK_MAP.get(r.lower())
+        or 99
+    )
+
+
 # ==========================================================
 # DÉS / RNG
 # ==========================================================
@@ -154,6 +177,7 @@ def roll_d20() -> int:
 
 def coinflip() -> bool:
     return random.random() < 0.5
+
 
 # ==========================================================
 # ENNEMIS / PNJ ICONIQUES (base)
@@ -184,8 +208,9 @@ BAYLIFE_NPCS = [
     "Dodo Lasaumure",
 ]
 
+
 # ==========================================================
-# BOSS: ATTENIN
+# BOSS: ATTENIN (textes)
 # ==========================================================
 
 ATTENIN_TAUNTS = [
@@ -202,10 +227,11 @@ ATTENIN_SAVE_LINE = "« Le SubUrban sera toujours de ton côté. »"
 ATTENIN_EXEC_FAIL = "Tes mains tremblent. « Finalement… je ne peux pas l’achever… » Attenin s’échappe, blessée mais vivante."
 ATTENIN_EXEC_SUCCESS = "Le dernier coup part. Attenin s’effondre. Le silence dure une seconde. Mikasa laisse échapper un petit *prrr*."
 
+
 # ==========================================================
-# ÉCONOMIE / ITEMS / CLÉS
+# ÉCONOMIE / LOOT (optionnel, si tu l’utilises côté domain)
 # ==========================================================
-# NOTE: en Sheets (HUNT_KEYS.key_type), on utilisera plutôt "NORMAL" ou "GOLD"
+
 KEY_NORMAL = "NORMAL"
 KEY_GOLD = "GOLD"
 
@@ -243,9 +269,6 @@ def _weighted_choice(items: List[Tuple[str, int]]) -> str:
     return items[-1][0]
 
 def roll_key_rarity(key_type: str) -> str:
-    """
-    Clé or = meilleures chances.
-    """
     kt = (key_type or "").upper().strip()
     if kt == KEY_GOLD:
         return _weighted_choice([
@@ -268,8 +291,9 @@ def roll_loot_from_rarity(rarity: str) -> LootItem:
         pool = [x for x in LOOT_POOL if x.rarity == RARITY_COMMON] or LOOT_POOL[:]
     return random.choice(pool)
 
+
 # ==========================================================
-# JETS JOURNALIERS
+# DAILY (menu types)
 # ==========================================================
 
 DAILY_ROLL_TYPES = [
@@ -288,29 +312,9 @@ def build_daily_roll_menu(is_employee: bool) -> List[str]:
     """
     base = ["COMBAT", "EXPLO", "SURVIE", "CHANCE"]
     picks = random.sample(base, k=3)
-
     if is_employee and random.random() < 0.50:
         picks.append("DIRECTION")
-
     return picks
 
 def roll_direction_bonus_event() -> bool:
-    """
-    Bonus interne pour le Jet de la Direction.
-    Ex: chance de rencontrer un allié, loot amélioré, etc.
-    """
     return random.random() < 0.50
-
-def avatar_image_url(avatar_tag: str) -> str:
-    """
-    Retourne l'URL d'image d'un avatar à partir de son tag.
-    Compatible avec hunt_ui.py.
-    """
-    av = get_avatar(avatar_tag)
-    if not av:
-        return ""
-    # On accepte plusieurs conventions de clé pour être robuste
-    return (
-        str(av.get("image_url") or av.get("url") or av.get("image") or "")
-        .strip()
-    )
