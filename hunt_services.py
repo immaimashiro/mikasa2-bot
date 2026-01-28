@@ -18,6 +18,10 @@ from services import (
     challenge_week_window,
 )
 
+def today_key(dt=None) -> str:
+    dt = dt or now_fr()
+    return dt.strftime("%Y-%m-%d")
+
 # ==========================================================
 # Tables
 # ==========================================================
