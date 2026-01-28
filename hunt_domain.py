@@ -67,13 +67,9 @@ SCENES = [
     "Downtown. Les vitrines reflètent ton visage… et une silhouette derrière toi.",
 ]
 
-T_PLAYERS = "HUNT_PLAYERS"   # <-- adapte si ton onglet s'appelle autrement
+T_PLAYERS = "HUNT_PLAYERS"
 
 def get_player_row(s: SheetsService, discord_id: int) -> Tuple[Optional[int], Optional[Dict[str, Any]]]:
-    """
-    Retourne (row_index_sheet, player_dict) ou (None, None)
-    row_index_sheet est la ligne Sheets (start=2 car header ligne 1).
-    """
     rows = s.get_all_records(T_PLAYERS)
     for idx, r in enumerate(rows, start=2):
         if str(r.get("discord_id", "")).strip() == str(discord_id):
