@@ -398,6 +398,68 @@ def build_vip_level_embed(s, vip: dict) -> discord.Embed:
 # ==========================================================
 # VIP Pick (HG) - sélection rapide
 # ==========================================================
+# ==========================================================
+# VIP Edit View (HG) – wrapper propre
+# ==========================================================
+class VipEditView(discord.ui.View):
+    def __init__(
+        self,
+        *,
+        services,
+        author_id: int,
+        code_vip: str,
+        vip_pseudo: str,
+    ):
+        super().__init__(timeout=5 * 60)
+        self.s = services
+        self.author_id = int(author_id)
+        self.code = normalize_code(code_vip)
+        self.vip_pseudo = display_name(vip_pseudo or self.code)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                catify("😾 Pas touche. Lance ta propre commande."),
+                ephemeral=True
+            )
+            return False
+        return True
+
+    def build_embed(self) -> discord.Embed:
+        return discord.Embed(
+            title="🛠️ Edition VIP (HG)",
+            description=(
+                f"👤 **{self.vip_pseudo}**\n"
+                f"🎴 Code VIP: `{self.code}`\n\n"
+                "Choisis une action :"
+            ),
+            color=discord.Color.dark_purple()
+        )
+
+    @discord.ui.button(label="✏️ Modifier le VIP", style=discord.ButtonStyle.primary)
+    async def edit_vip(self, interaction: discord.Interaction, button: discord.ui.Button):
+        row_i, vip = domain.find_vip_row_by_code(self.s, self.code)
+        if not row_i or not vip:
+            return await interaction.response.send_message("❌ VIP introuvable.", ephemeral=True)
+
+        await interaction.response.send_modal(
+            VipEditModal(services=self.s, row_i=row_i, vip=vip)
+        )
+
+    @discord.ui.button(label="📌 Ouvrir Hub VIP", style=discord.ButtonStyle.secondary)
+    async def open_hub(self, interaction: discord.Interaction, button: discord.ui.Button):
+        view = VipHubView(
+            services=self.s,
+            code_vip=self.code,
+            vip_pseudo=self.vip_pseudo
+        )
+        await interaction.response.send_message(
+            embed=view.hub_embed(),
+            view=view,
+            ephemeral=True
+        )
+
+
 class VipPickSelect(discord.ui.Select):
     def __init__(self, view: "VipPickView", options: List[discord.SelectOption]):
         super().__init__(
@@ -416,68 +478,71 @@ class VipPickSelect(discord.ui.Select):
 
 class VipPickView(discord.ui.View):
     """
-    View HG: choisir un VIP, puis:
-      - ouvrir Hub VIP (pour montrer au VIP)
-      - ouvrir Edition (HG)
+    View HG: choisir un VIP après recherche floue
+    matches = List[(pseudo, code)]
     """
-    def __init__(self, *, services, author_id: int, vip_rows: List[dict]):
+    def __init__(
+        self,
+        *,
+        services,
+        author_id: int,
+        matches: List[Tuple[str, str]],
+    ):
         super().__init__(timeout=5 * 60)
         self.s = services
         self.author_id = int(author_id)
-        self.vip_rows = vip_rows or []
+        self.matches = matches
         self.selected_code: Optional[str] = None
 
-        options: List[discord.SelectOption] = []
-        for r in self.vip_rows[:25]:
-            code = normalize_code(str(r.get("code_vip", "")))
-            pseudo = display_name(r.get("pseudo", code))
-            if not code:
-                continue
-            options.append(discord.SelectOption(label=f"{pseudo}", value=code, description=code))
+        options = [
+            discord.SelectOption(label=pseudo, value=code, description=code)
+            for pseudo, code in matches[:25]
+        ]
 
         self.add_item(VipPickSelect(self, options))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author_id:
-            await interaction.response.send_message(catify("😾 Pas touche. Lance ta propre commande."), ephemeral=True)
+            await interaction.response.send_message(
+                catify("😾 Pas touche. Lance ta propre commande."),
+                ephemeral=True
+            )
             return False
         return True
 
     def build_embed(self) -> discord.Embed:
         e = discord.Embed(
-            title="🎯 VIP Pick (HG)",
-            description="Choisis un VIP dans la liste, puis une action.",
+            title="🔎 Sélection du VIP",
+            description="Plusieurs VIP correspondent. Choisis le bon :",
             color=discord.Color.dark_purple()
         )
         if self.selected_code:
             e.add_field(name="Sélection", value=f"`{self.selected_code}`", inline=False)
         return e
 
-    @discord.ui.button(label="📌 Ouvrir Hub VIP", style=discord.ButtonStyle.primary)
-    async def open_hub(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="🛠️ Ouvrir l’édition", style=discord.ButtonStyle.primary)
+    async def open_edit(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.selected_code:
-            return await interaction.response.send_message("😾 Sélectionne d’abord un VIP.", ephemeral=True)
+            return await interaction.response.send_message(
+                "😾 Sélectionne d’abord un VIP.",
+                ephemeral=True
+            )
 
         row_i, vip = domain.find_vip_row_by_code(self.s, self.selected_code)
         if not row_i or not vip:
             return await interaction.response.send_message("❌ VIP introuvable.", ephemeral=True)
 
-        code = normalize_code(str(vip.get("code_vip", "")))
-        pseudo = display_name(vip.get("pseudo", code))
-
-        view = VipHubView(services=self.s, code_vip=code, vip_pseudo=pseudo)
-        await interaction.response.send_message(embed=view.hub_embed(), view=view, ephemeral=True)
-
-    @discord.ui.button(label="🛠️ Edit VIP", style=discord.ButtonStyle.secondary)
-    async def edit_vip(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.selected_code:
-            return await interaction.response.send_message("😾 Sélectionne d’abord un VIP.", ephemeral=True)
-
-        row_i, vip = domain.find_vip_row_by_code(self.s, self.selected_code)
-        if not row_i or not vip:
-            return await interaction.response.send_message("❌ VIP introuvable.", ephemeral=True)
-
-        await interaction.response.send_modal(VipEditModal(services=self.s, row_i=row_i, vip=vip))
+        pseudo = display_name(vip.get("pseudo", self.selected_code))
+        view = VipEditView(
+            services=self.s,
+            author_id=self.author_id,
+            code_vip=self.selected_code,
+            vip_pseudo=pseudo
+        )
+        await interaction.response.edit_message(
+            embed=view.build_embed(),
+            view=view
+        )
 
 
 class VipEditModal(discord.ui.Modal, title="VIP Edit (HG)"):
