@@ -1,27 +1,28 @@
 # hunt_domain.py
 # -*- coding: utf-8 -*-
-
 from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple, List
 from datetime import datetime, timedelta
 import random
+import json
+
 import hunt_data as hda
 import hunt_services as hs
 from services import now_fr, now_iso, normalize_code, display_name
 
-from hunt_data import rarity_rank
-
+# ------------------------------------
+# Equip slots (alignés sur hs.equipped_json)
+# ------------------------------------
 EQUIP_SLOTS = {
     "weapon": "weapon",
     "armor": "armor",
+    "stim": "stim",
 }
 
 # ==========================================================
 # AVATARS (Direction SubUrban)
-# IMPORTANT: tes URLs GitHub doivent être en "raw" pour marcher en thumbnail Discord.
-# Exemple:
-# https://raw.githubusercontent.com/<user>/<repo>/<branch>/Mai.png
+# (si tu utilises déjà hda.AVATARS, tu peux supprimer ce bloc)
 # ==========================================================
 DIRECTION_AVATARS: List[Dict[str, str]] = [
     {"tag": "MAI",   "label": "Mai",   "url": "https://raw.githubusercontent.com/immaimashiro/mikasa2-bot/main/Mai.png"},
@@ -43,17 +44,14 @@ def pick_random_direction(exclude: Optional[List[str]] = None) -> Dict[str, str]
     pool = [a for a in DIRECTION_AVATARS if a["tag"] not in ex] or DIRECTION_AVATARS[:]
     return random.choice(pool)
 
-
 # ==========================================================
 # DÉS
 # ==========================================================
 def d20() -> int:
     return random.randint(1, 20)
 
-
 # ==========================================================
 # ENNEMIS / SCÈNES (base)
-# (on enrichira ensuite + boss + dialogues)
 # ==========================================================
 ENEMIES = [
     {"id": "COYOTE", "name": "Coyote affamé", "hp": 10, "atk": 3},
@@ -69,9 +67,8 @@ SCENES = [
     "Downtown. Les vitrines reflètent ton visage… et une silhouette derrière toi.",
 ]
 
-
 # ==========================================================
-# PLAYER HELPERS (alignés sur HUNT_PLAYERS)
+# PLAYER HELPERS (alignés sur hs.ensure_player)
 # ==========================================================
 def ensure_player_profile(
     sheets,
@@ -81,17 +78,13 @@ def ensure_player_profile(
     pseudo: str,
     is_employee: bool,
 ) -> Tuple[int, Dict[str, Any]]:
-    """
-    Crée/MAJ le joueur (ligne HUNT_PLAYERS) avec les bons headers.
-    """
-    return hs.upsert_player(
+    return hs.ensure_player(
         sheets,
-        discord_id=discord_id,
-        code_vip=normalize_code(code_vip),
+        discord_id=int(discord_id),
+        vip_code=normalize_code(code_vip),
         pseudo=display_name(pseudo),
         is_employee=bool(is_employee),
     )
-
 
 def set_avatar(
     sheets,
@@ -100,96 +93,81 @@ def set_avatar(
     avatar_tag: str,
     avatar_url: str,
 ) -> Tuple[bool, str]:
-    row_i, row = hs.find_player_row(sheets, discord_id)
+    row_i, row = hs.get_player_row(sheets, int(discord_id))
     if not row_i or not row:
         return False, "Profil HUNT introuvable."
-
-    sheets.update_cell_by_header(hs.T_PLAYERS, row_i, "avatar_tag", (avatar_tag or "").strip().upper())
-    sheets.update_cell_by_header(hs.T_PLAYERS, row_i, "avatar_url", (avatar_url or "").strip())
-    sheets.update_cell_by_header(hs.T_PLAYERS, row_i, "updated_at", now_iso())
+    hs.player_set_avatar(sheets, int(row_i), tag=(avatar_tag or "").strip().upper(), url=(avatar_url or "").strip())
     return True, ""
 
-def try_assign_permanent_ally(sheets, p_row_i: int, player: dict) -> bool:
+def try_assign_permanent_ally(sheets, p_row_i: int, player: Dict[str, Any]) -> bool:
     """
     Donne un allié UNE FOIS (permanent) :
     - seulement si pas d'allié déjà
     - roll 50% si is_employee
-    - roll 10% sinon (tu peux ajuster)
+    - roll 10% sinon
     - jamais le même que l'avatar_tag
     - mémorise le roll dans equipped_json.meta.ally_roll_done
-    Retourne True si allié attribué.
     """
-    ally_tag = str(player.get("ally_tag","")).strip().upper()
+    ally_tag = str(player.get("ally_tag", "") or "").strip().upper()
     if ally_tag:
         return False
 
-    if hs.meta_get(player, "ally_roll_done", False):
+    if bool(hs.meta_get(player, "ally_roll_done", False)):
         return False
 
-    is_emp = str(player.get("is_employee","0")).strip().lower() in ("1","true","yes")
+    is_emp = str(player.get("is_employee", "")).strip().lower() in ("1", "true", "yes", "y", "on")
     chance = 0.50 if is_emp else 0.10
 
+    # on marque "déjà tenté" quoi qu'il arrive (anti spam)
     hs.meta_set(sheets, int(p_row_i), player, "ally_roll_done", True)
 
     if random.random() > chance:
         return False
 
-    avatar_tag = str(player.get("avatar_tag","")).strip().upper()
+    avatar_tag = str(player.get("avatar_tag", "") or "").strip().upper()
     ally = hda.pick_ally(exclude_tag=avatar_tag)
 
-    sheets.update_cell_by_header("HUNT_PLAYERS", int(p_row_i), "ally_tag", ally.tag)
-    sheets.update_cell_by_header("HUNT_PLAYERS", int(p_row_i), "ally_url", ally.image)
-    sheets.update_cell_by_header("HUNT_PLAYERS", int(p_row_i), "updated_at", hs.now_iso() if hasattr(hs, "now_iso") else "")
+    hs.player_set_ally(sheets, int(p_row_i), ally_tag=ally.tag, ally_url=ally.image)
 
-    hs.log(sheets,
-           discord_id=int(player.get("discord_id", 0) or 0),
-           code_vip=str(player.get("vip_code","") or ""),
-           kind="ally",
-           message=f"ally assigned {ally.tag}",
-           meta={"ally_tag": ally.tag, "chance": chance, "is_employee": is_emp})
+    hs.log(
+        sheets,
+        discord_id=int(player.get("discord_id", 0) or 0),
+        code_vip=str(player.get("code_vip", "") or ""),
+        kind="ALLY",
+        message=f"ally assigned {ally.tag}",
+        meta={"ally_tag": ally.tag, "chance": chance, "is_employee": is_emp},
+    )
     return True
+
 # ==========================================================
-# JAIL (12h max)
+# JAIL
 # ==========================================================
 def apply_jail_to_player(
     sheets,
     *,
     player_row_i: int,
+    discord_id: int,
+    code_vip: str,
     hours: float,
     reason: str,
 ) -> datetime:
-    h = max(0.25, float(hours))
-    h = min(float(hs.MAX_JAIL_HOURS), h)
-
-    until = now_fr() + timedelta(seconds=int(h * 3600))
-    sheets.update_cell_by_header(hs.T_PLAYERS, player_row_i, "jail_until", until.astimezone(hs.PARIS_TZ).isoformat(timespec="seconds"))
-    sheets.update_cell_by_header(hs.T_PLAYERS, player_row_i, "updated_at", now_iso())
-
-    # log
-    try:
-        hs.hunt_log(
-            sheets,
-            discord_id=int(sheets.get_all_records(hs.T_PLAYERS)[player_row_i-2].get("discord_id", "0") or 0),
-            code_vip=str(sheets.get_all_records(hs.T_PLAYERS)[player_row_i-2].get("code_vip", "") or ""),
-            kind="JAIL",
-            message=f"Prison {h:.2f}h | {reason}",
-        )
-    except Exception:
-        pass
-
+    until = hs.set_jail(
+        sheets,
+        discord_id=int(discord_id),
+        hours=float(hours),
+        reason=str(reason or ""),
+        code_vip=str(code_vip or ""),
+    )
     return until
-
 
 # ==========================================================
 # DAILY STATE (multi-tours)
-# On sauvegarde à chaque action (anti retour arrière).
 # ==========================================================
 def _player_stat_int(player: Dict[str, Any], key: str, default: int) -> int:
     try:
         return int(player.get(key, default) or default)
     except Exception:
         return default
-
 
 def new_daily_state(player: Dict[str, Any]) -> Dict[str, Any]:
     enemy = random.choice(ENEMIES)
@@ -218,14 +196,18 @@ def new_daily_state(player: Dict[str, Any]) -> Dict[str, Any]:
 
         "died": False,
         "jailed": False,
-        "jail_hours": 0,
+        "jail_hours": 0.0,
     }
-
 
 def _append_log(state: Dict[str, Any], msg: str) -> None:
     state.setdefault("log", [])
-    state["log"].append(msg[:400])
+    state["log"].append((msg or "")[:400])
 
+def _reward_money() -> int:
+    return random.randint(15, 45)
+
+def _reward_xp() -> int:
+    return random.randint(8, 20)
 
 def apply_enemy_turn(state: Dict[str, Any], player: Dict[str, Any]) -> Dict[str, Any]:
     df = _player_stat_int(player, "stats_def", 2)
@@ -240,18 +222,13 @@ def apply_enemy_turn(state: Dict[str, Any], player: Dict[str, Any]) -> Dict[str,
     if state["player_hp"] <= 0:
         state["done"] = True
         state["died"] = True
-
-        # mort = perte partielle (soft)
-        # On évite de casser le fun: on retire un peu de Hunt$ et un peu d'XP gagnée dans la run.
         state["reward_dollars"] = max(0, int(state["reward_dollars"]) - random.randint(5, 15))
         state["reward_xp"] = max(0, int(state["reward_xp"]) - 1)
-
         _append_log(state, "💀 Tu t’écroules. Mikasa te tire hors du danger… et te juge silencieusement.")
     else:
         state["turn"] = int(state.get("turn", 1)) + 1
 
     return state
-
 
 def apply_attack(state: Dict[str, Any], player: Dict[str, Any]) -> Dict[str, Any]:
     atk = _player_stat_int(player, "stats_atk", 3)
@@ -266,10 +243,9 @@ def apply_attack(state: Dict[str, Any], player: Dict[str, Any]) -> Dict[str, Any
 
     if state["enemy"]["hp"] <= 0:
         state["done"] = True
-
         bonus = d20()
-        dollars = hs.money_reward() + (bonus // 4)
-        xp = hs.xp_reward() // 3 + (1 if bonus >= 15 else 0)
+        dollars = _reward_money() + (bonus // 4)
+        xp = (_reward_xp() // 3) + (1 if bonus >= 15 else 0)
 
         state["reward_dollars"] += int(dollars)
         state["reward_xp"] += int(xp)
@@ -279,7 +255,6 @@ def apply_attack(state: Dict[str, Any], player: Dict[str, Any]) -> Dict[str, Any
 
     return apply_enemy_turn(state, player)
 
-
 def apply_heal(state: Dict[str, Any], player: Dict[str, Any]) -> Dict[str, Any]:
     roll = d20()
     heal = 3 + (2 if roll >= 15 else 0)
@@ -287,11 +262,7 @@ def apply_heal(state: Dict[str, Any], player: Dict[str, Any]) -> Dict[str, Any]:
     _append_log(state, f"🩹 Tu te soignes: jet **{roll}** → **+{heal} PV**.")
     return apply_enemy_turn(state, player)
 
-
 def apply_steal(state: Dict[str, Any], player: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Vol = gain Hunt$ mais risque prison.
-    """
     cha = _player_stat_int(player, "stats_cha", 2)
     luck = _player_stat_int(player, "stats_luck", 1)
     roll = d20()
@@ -301,12 +272,10 @@ def apply_steal(state: Dict[str, Any], player: Dict[str, Any]) -> Dict[str, Any]
         gain = 15 + (roll // 3)
         state["reward_dollars"] += int(gain)
         _append_log(state, f"👜 Vol réussi: jet **{roll}** → **+{gain} Hunt$**. Personne n’a rien vu… presque.")
-        # l’ennemi peut quand même te tomber dessus après ton vol
         return apply_enemy_turn(state, player)
 
-    # prison: 2h -> 12h (max)
     hours = 2 + max(0, (18 - score)) * 0.75
-    hours = min(float(hs.MAX_JAIL_HOURS), hours)
+    hours = min(float(hs.MAX_JAIL_HOURS), float(hours))
 
     state["done"] = True
     state["jailed"] = True
@@ -314,20 +283,14 @@ def apply_steal(state: Dict[str, Any], player: Dict[str, Any]) -> Dict[str, Any]
     _append_log(state, f"🚨 Vol raté: jet **{roll}** → menottes. **Prison {hours:.1f}h**.")
     return state
 
-
 # ==========================================================
-# DAILY FLOW (création / reprise / sauvegarde / finish)
+# DAILY FLOW
 # ==========================================================
 def start_or_resume_daily(
     sheets,
     *,
     player_row: Dict[str, Any],
 ) -> Tuple[int, Dict[str, Any], Dict[str, Any]]:
-    """
-    Retourne: (daily_row_i, daily_row, state_dict)
-    - crée une ligne HUNT_DAILY si besoin
-    - charge state_json si déjà running
-    """
     discord_id = int(player_row.get("discord_id", 0) or 0)
     code_vip = normalize_code(str(player_row.get("code_vip", "") or ""))
 
@@ -339,13 +302,12 @@ def start_or_resume_daily(
         date_key=date_key,
     )
 
-    state = hs.json_loads_safe(str(daily_row.get("state_json", "") or ""), {})
+    state = hs.json_loads_safe(daily_row.get("state_json", ""), {})
     if not state:
         state = new_daily_state(player_row)
-        hs.save_daily_state(sheets, daily_row_i, step=0, state=state)
+        hs.save_daily_state(sheets, int(daily_row_i), step=0, state=state)
 
-    return daily_row_i, daily_row, state
-
+    return int(daily_row_i), daily_row, state
 
 def apply_choice_and_persist(
     sheets,
@@ -356,9 +318,6 @@ def apply_choice_and_persist(
     state: Dict[str, Any],
     choice: str,  # "ATTACK" | "HEAL" | "STEAL"
 ) -> Dict[str, Any]:
-    """
-    Applique un choix de tour, puis sauvegarde immédiatement state_json + step.
-    """
     if state.get("done"):
         return state
 
@@ -370,22 +329,18 @@ def apply_choice_and_persist(
     else:
         state = apply_attack(state, player_row)
 
-    # persist
     step = int(state.get("turn", 1))
-    hs.save_daily_state(sheets, daily_row_i, step=step, state=state)
+    hs.save_daily_state(sheets, int(daily_row_i), step=step, state=state)
 
-    # if done -> finalize
     if state.get("done"):
         finalize_daily_run(
             sheets,
-            player_row_i=player_row_i,
+            player_row_i=int(player_row_i),
             player_row=player_row,
-            daily_row_i=daily_row_i,
+            daily_row_i=int(daily_row_i),
             state=state,
         )
-
     return state
-
 
 def finalize_daily_run(
     sheets,
@@ -395,11 +350,6 @@ def finalize_daily_run(
     daily_row_i: int,
     state: Dict[str, Any],
 ) -> None:
-    """
-    Met à jour:
-    - HUNT_DAILY DONE
-    - HUNT_PLAYERS (dollars/xp/last_daily_date/jail_until/heat/runs/deaths)
-    """
     discord_id = int(player_row.get("discord_id", 0) or 0)
     code_vip = normalize_code(str(player_row.get("code_vip", "") or ""))
 
@@ -410,24 +360,25 @@ def finalize_daily_run(
     earned_xp = int(state.get("reward_xp", 0) or 0)
     earned_dol = int(state.get("reward_dollars", 0) or 0)
 
-    # Apply jail if needed
+    # jail + heat
     if jailed and jail_hours > 0:
-        until = now_fr() + timedelta(seconds=int(min(float(hs.MAX_JAIL_HOURS), jail_hours) * 3600))
-        sheets.update_cell_by_header(hs.T_PLAYERS, player_row_i, "jail_until", until.astimezone(hs.PARIS_TZ).isoformat(timespec="seconds"))
-
-        # heat +10 si vol raté (simple)
+        hs.set_jail(
+            sheets,
+            discord_id=discord_id,
+            hours=min(float(hs.MAX_JAIL_HOURS), float(jail_hours)),
+            reason="STEAL_FAIL",
+            code_vip=code_vip,
+        )
+        # heat +10
         try:
             heat = int(player_row.get("heat", 0) or 0)
         except Exception:
             heat = 0
         heat = min(100, heat + 10)
-        sheets.update_cell_by_header(hs.T_PLAYERS, player_row_i, "heat", heat)
+        sheets.update_cell_by_header(hs.T_PLAYERS, int(player_row_i), "heat", str(int(heat)))
 
-    # Add dollars/xp
-    try:
-        cur_d = int(player_row.get("hunt_dollars", 0) or 0)
-    except Exception:
-        cur_d = 0
+    # add money/xp
+    cur_d = hs.player_money_get(player_row)
     try:
         cur_xp = int(player_row.get("xp", 0) or 0)
     except Exception:
@@ -437,15 +388,11 @@ def finalize_daily_run(
     except Exception:
         cur_xpt = 0
 
-    new_d = max(0, cur_d + earned_dol)
-    new_xp = max(0, cur_xp + earned_xp)
-    new_xpt = max(0, cur_xpt + earned_xp)
+    sheets.update_cell_by_header(hs.T_PLAYERS, int(player_row_i), "hunt_dollars", str(max(0, cur_d + earned_dol)))
+    sheets.update_cell_by_header(hs.T_PLAYERS, int(player_row_i), "xp", str(max(0, cur_xp + earned_xp)))
+    sheets.update_cell_by_header(hs.T_PLAYERS, int(player_row_i), "xp_total", str(max(0, cur_xpt + earned_xp)))
 
-    sheets.update_cell_by_header(hs.T_PLAYERS, player_row_i, "hunt_dollars", new_d)
-    sheets.update_cell_by_header(hs.T_PLAYERS, player_row_i, "xp", new_xp)
-    sheets.update_cell_by_header(hs.T_PLAYERS, player_row_i, "xp_total", new_xpt)
-
-    # runs / deaths
+    # runs/deaths
     try:
         total_runs = int(player_row.get("total_runs", 0) or 0)
     except Exception:
@@ -455,30 +402,23 @@ def finalize_daily_run(
     except Exception:
         total_deaths = 0
 
-    sheets.update_cell_by_header(hs.T_PLAYERS, player_row_i, "total_runs", total_runs + 1)
+    sheets.update_cell_by_header(hs.T_PLAYERS, int(player_row_i), "total_runs", str(int(total_runs + 1)))
     if died:
-        sheets.update_cell_by_header(hs.T_PLAYERS, player_row_i, "total_deaths", total_deaths + 1)
+        sheets.update_cell_by_header(hs.T_PLAYERS, int(player_row_i), "total_deaths", str(int(total_deaths + 1)))
 
     # daily lock
-    sheets.update_cell_by_header(hs.T_PLAYERS, player_row_i, "last_daily_date", hs.date_key_fr())
-    sheets.update_cell_by_header(hs.T_PLAYERS, player_row_i, "updated_at", now_iso())
+    sheets.update_cell_by_header(hs.T_PLAYERS, int(player_row_i), "last_daily_date", hs.date_key_fr())
+    sheets.update_cell_by_header(hs.T_PLAYERS, int(player_row_i), "updated_at", now_iso())
 
-    # daily summary
-    summary = ""
-    if died:
-        summary = "💀 Défaite"
-    elif jailed:
-        summary = "🚨 Prison"
-    else:
-        summary = "🏁 Victoire"
+    summary = "💀 Défaite" if died else ("🚨 Prison" if jailed else "🏁 Victoire")
 
     hs.finish_daily(
         sheets,
-        daily_row_i,
+        int(daily_row_i),
         summary=summary,
         xp=earned_xp,
         dollars=earned_dol,
-        dmg=int(state.get("dmg_taken", 0) or 0),
+        dmg=0,
         died=died,
         jailed=jailed,
     )
@@ -491,7 +431,6 @@ def finalize_daily_run(
         message=f"{summary} | +{earned_dol} Hunt$ | +{earned_xp} XP",
     )
 
-
 # ==========================================================
 # KEY CLAIM (staff)
 # ==========================================================
@@ -503,11 +442,6 @@ def staff_claim_key_for_vip(
     claimed_by_staff_id: int,
     is_employee: bool,
 ) -> Tuple[bool, str]:
-    """
-    /hunt key claim <VIP_ID>
-    - 1 clé / semaine / VIP
-    - employé => GOLD, sinon NORMAL
-    """
     key_type = "GOLD" if is_employee else "NORMAL"
     return hs.claim_weekly_key(
         sheets,
@@ -517,105 +451,12 @@ def staff_claim_key_for_vip(
         key_type=key_type,
     )
 
-
-def is_equippable(item: Dict[str, Any]) -> bool:
-    t = str(item.get("type", "")).strip().lower()
-    return t in ("weapon", "armor")
-
-def equip_slot(item: Dict[str, Any]) -> Optional[str]:
-    t = str(item.get("type", "")).strip().lower()
-    return EQUIP_SLOTS.get(t)
-
-def loot_pick_from_items(items: List[Dict[str, Any]], *, key_type: str) -> Tuple[str, int, str, str]:
-    """
-    Retourne (item_id, qty, rarity, name)
-    key_type: "key" ou "gold_key"
-    """
-    # pool = items avec item_id
-    pool = [it for it in items if str(it.get("item_id", "")).strip()]
-    if not pool:
-        return ("", 0, "common", "")
-
-    # poids rarité
-    # normal: beaucoup common/uncommon
-    # gold: plus de rare/epic
-    if key_type == "gold_key":
-        weights = {"common": 35, "uncommon": 35, "rare": 18, "epic": 10, "legendary": 2}
-    else:
-        weights = {"common": 55, "uncommon": 30, "rare": 12, "epic": 3, "legendary": 0}
-
-    def w(it: Dict[str, Any]) -> int:
-        r = str(it.get("rarity", "common")).strip().lower()
-        return int(weights.get(r, 1))
-
-    chosen = random.choices(pool, weights=[w(it) for it in pool], k=1)[0]
-    iid = str(chosen.get("item_id", "")).strip()
-    name = str(chosen.get("name", iid)).strip()
-    rarity = str(chosen.get("rarity", "common")).strip().lower()
-
-    # qty par rarity (simple)
-    if rarity in ("legendary", "epic"):
-        qty = 1
-    elif rarity == "rare":
-        qty = random.choice([1, 1, 2])
-    else:
-        qty = random.choice([1, 2])
-
-    return (iid, qty, rarity, name)
-
 # ==========================================================
-# ENTRYPOINTS “COMMAND LOGIC” (utiles côté bot)
+# LOOT OPEN KEY (depuis HUNT_ITEMS)
 # ==========================================================
-def can_player_start_daily(player_row: Dict[str, Any]) -> Tuple[bool, str]:
-    return hs.can_run_daily(player_row)
+RARITY_WEIGHTS_NORMAL = {"common": 55, "uncommon": 30, "rare": 12, "epic": 3, "legendary": 0}
+RARITY_WEIGHTS_GOLD   = {"common": 20, "uncommon": 50, "rare": 22, "epic": 7, "legendary": 1}
 
-def start_daily_if_allowed(
-    sheets,
-    *,
-    discord_id: int,
-    code_vip: str,
-    pseudo: str,
-    is_employee: bool,
-) -> Tuple[bool, str, Optional[int], Optional[Dict[str, Any]], Optional[int], Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
-    """
-    Retourne:
-    ok, msg,
-    player_row_i, player_row,
-    daily_row_i, daily_row,
-    state
-    """
-    player_row_i, player_row = ensure_player_profile(
-        sheets,
-        discord_id=discord_id,
-        code_vip=code_vip,
-        pseudo=pseudo,
-        is_employee=is_employee,
-    )
-
-    ok, msg = hs.can_run_daily(player_row)
-    if not ok:
-        return False, msg, player_row_i, player_row, None, None, None
-
-    daily_row_i, daily_row, state = start_or_resume_daily(sheets, player_row=player_row)
-    return True, "OK", player_row_i, player_row, daily_row_i, daily_row, state
-
-RARITY_WEIGHTS_NORMAL = {
-    "common": 70,
-    "uncommon": 24,
-    "rare": 5,
-    "epic": 1,
-    "legendary": 0,
-}
-
-RARITY_WEIGHTS_GOLD = {
-    "common": 20,
-    "uncommon": 50,
-    "rare": 22,
-    "epic": 7,
-    "legendary": 1,
-}
-
-# qty par type (par défaut)
 DEFAULT_QTY_BY_TYPE = {
     "consumable": (1, 2),
     "weapon": (1, 1),
@@ -628,36 +469,30 @@ def _norm_rarity(r: str) -> str:
     r = (r or "").strip().lower()
     if r in ("commun", "common"): return "common"
     if r in ("peu commun", "uncommon"): return "uncommon"
-    if r in ("rare",): return "rare"
+    if r == "rare": return "rare"
     if r in ("epic", "épique"): return "epic"
     if r in ("legendary", "légendaire"): return "legendary"
     return "common"
 
-def loot_pick_item(items: List[Dict[str, Any]], *, is_gold: bool, rng: Optional[random.Random] = None) -> Dict[str, Any]:
-    rng = rng or random.Random()
+def loot_pick_item(items: List[Dict[str, Any]], *, is_gold: bool) -> Dict[str, Any]:
     weights = RARITY_WEIGHTS_GOLD if is_gold else RARITY_WEIGHTS_NORMAL
-
     pool: List[Tuple[Dict[str, Any], int]] = []
+
     for it in items or []:
         iid = str(it.get("item_id", "")).strip()
         if not iid:
             continue
         rarity = _norm_rarity(str(it.get("rarity", "")))
         w = int(weights.get(rarity, 0))
-        if w <= 0:
-            continue
-        pool.append((it, w))
+        if w > 0:
+            pool.append((it, w))
 
-    # fallback si ton sheet n’a pas encore de raretés propres
     if not pool:
-        # prend n’importe quel item_id non vide
-        candidates = [it for it in items if str(it.get("item_id", "")).strip()]
-        if not candidates:
-            return {}
-        return rng.choice(candidates)
+        candidates = [it for it in (items or []) if str(it.get("item_id", "")).strip()]
+        return random.choice(candidates) if candidates else {}
 
     total = sum(w for _, w in pool)
-    pick = rng.randint(1, total)
+    pick = random.randint(1, total)
     acc = 0
     for it, w in pool:
         acc += w
@@ -665,32 +500,23 @@ def loot_pick_item(items: List[Dict[str, Any]], *, is_gold: bool, rng: Optional[
             return it
     return pool[-1][0]
 
-def loot_compute_qty(item: Dict[str, Any], *, rng: Optional[random.Random] = None) -> int:
-    rng = rng or random.Random()
+def loot_compute_qty(item: Dict[str, Any]) -> int:
     typ = str(item.get("type", "") or "").strip().lower() or "misc"
     lo, hi = DEFAULT_QTY_BY_TYPE.get(typ, (1, 1))
-
     rarity = _norm_rarity(str(item.get("rarity", "")))
-    # petit bonus qty sur commun/uncommon
+
     if typ in ("consumable", "misc"):
         if rarity == "common":
             hi = max(hi, hi + 1)
-        elif rarity == "uncommon":
-            hi = max(hi, hi)
         elif rarity in ("epic", "legendary"):
             lo, hi = 1, 1
 
-    return max(1, rng.randint(int(lo), int(hi)))
+    return max(1, random.randint(int(lo), int(hi)))
 
 def loot_open_key(items: List[Dict[str, Any]], *, key_type: str) -> Dict[str, Any]:
-    """
-    Retour:
-    {
-      item_id, item_name, qty, rarity, key_type
-    }
-    """
     kt = (key_type or "").strip().lower()
     is_gold = (kt == "gold_key")
+
     it = loot_pick_item(items, is_gold=is_gold)
     if not it:
         return {"item_id": "", "item_name": "", "qty": 0, "rarity": "", "key_type": kt}
@@ -699,14 +525,16 @@ def loot_open_key(items: List[Dict[str, Any]], *, key_type: str) -> Dict[str, An
     name = str(it.get("name", "")).strip() or iid
     rarity = _norm_rarity(str(it.get("rarity", "")))
     qty = loot_compute_qty(it)
+
     return {"item_id": iid, "item_name": name, "qty": int(qty), "rarity": rarity, "key_type": kt}
 
+# ==========================================================
+# Weekly ranks recompute (sans helper manquant)
+# ==========================================================
 def weekly_score(row: dict) -> int:
-    import math
-    def gi(k): 
-        try: return int(row.get(k,0) or 0)
+    def gi(k):
+        try: return int(row.get(k, 0) or 0)
         except Exception: return 0
-
     wins = gi("wins")
     good = gi("good_runs")
     deaths = gi("deaths")
@@ -715,72 +543,52 @@ def weekly_score(row: dict) -> int:
     steals = gi("steals")
     dol = gi("earned_dollars")
     xp = gi("earned_xp")
-
     return (
-        10*wins +
-        2*good -
-        6*deaths -
-        3*jail +
-        8*boss +
-        4*steals +
-        (dol // 200) +
-        (xp // 50)
+        10*wins + 2*good - 6*deaths - 3*jail + 8*boss + 4*steals + (dol // 200) + (xp // 50)
     )
 
-def weekly_recompute_ranks(sheets, week_key: str):
-    rows = sheets.get_all_records("HUNT_WEEKLY")
-    wk = [r for r in rows if str(r.get("week_key","")).strip() == week_key]
+def weekly_recompute_ranks(sheets, week_key: str) -> None:
+    rows = sheets.get_all_records(hs.T_WEEKLY) or []
+    wk = [r for r in rows if str(r.get("week_key", "")).strip() == str(week_key).strip()]
     for r in wk:
         r["__score"] = weekly_score(r)
 
-    wk.sort(key=lambda r: (-int(r["__score"]), str(r.get("pseudo",""))))
-    # update score + rank
-    for idx, r in enumerate(wk, start=1):
-        discord_id = str(r.get("discord_id","")).strip()
-        # retrouve row index réel via un helper chez toi (id->row)
-        row_i = hs.weekly_row_index_by_discord_id(sheets, week_key, discord_id)  # à faire
-        if row_i:
-            sheets.update_cell_by_header("HUNT_WEEKLY", row_i, "score", int(r["__score"]))
-            sheets.update_cell_by_header("HUNT_WEEKLY", row_i, "top_rank", idx)
-            sheets.update_cell_by_header("HUNT_WEEKLY", row_i, "updated_at", hs.now_iso() if hasattr(hs, "now_iso") else "")
+    wk.sort(key=lambda r: (-int(r["__score"]), str(r.get("pseudo", ""))))
 
-# -------------------------------------------------
-# CONSUMABLE EFFECTS
-# -------------------------------------------------
+    for rank, r in enumerate(wk, start=1):
+        did = int(r.get("discord_id", 0) or 0)
+        row_i, row = hs.weekly_find_row(sheets, str(week_key).strip(), did)
+        if not row_i or not row:
+            continue
+        sheets.update_cell_by_header(hs.T_WEEKLY, int(row_i), "score", str(int(r["__score"])))
+        sheets.update_cell_by_header(hs.T_WEEKLY, int(row_i), "top_rank", str(int(rank)))
+        sheets.update_cell_by_header(hs.T_WEEKLY, int(row_i), "updated_at", now_iso())
 
-def consumable_apply(player: Dict[str, Any], item: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Applique les effets d’un consommable sur le player.
-    Retour:
-    {
-      healed: int,
-      msg: str
-    }
-    """
-    power = {}
-    try:
-        raw = item.get("power_json", "")
-        if isinstance(raw, dict):
-            power = raw
-        else:
-            power = json.loads(raw) if raw else {}
-    except Exception:
-        power = {}
+# ==========================================================
+# ENTRYPOINTS
+# ==========================================================
+def can_player_start_daily(player_row: Dict[str, Any]) -> Tuple[bool, str]:
+    return hs.can_run_daily(player_row)
 
-    healed = 0
-    msg = "Effet appliqué."
+def start_daily_if_allowed(
+    sheets,
+    *,
+    discord_id: int,
+    code_vip: str,
+    pseudo: str,
+    is_employee: bool,
+) -> Tuple[bool, str, Optional[int], Optional[Dict[str, Any]], Optional[int], Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    player_row_i, player_row = ensure_player_profile(
+        sheets,
+        discord_id=int(discord_id),
+        code_vip=str(code_vip),
+        pseudo=str(pseudo),
+        is_employee=bool(is_employee),
+    )
 
-    # HEAL
-    if "heal" in power:
-        try:
-            heal = int(power.get("heal", 0))
-        except Exception:
-            heal = 0
+    ok, msg = hs.can_run_daily(player_row)
+    if not ok:
+        return False, msg, player_row_i, player_row, None, None, None
 
-        hp = int(player.get("stats_hp", 0) or 0)
-        max_hp = hp  # pour l’instant hp = max_hp (tu ajouteras plus tard stats_max_hp)
-
-        healed = heal
-        msg = f"Soigne **{heal} HP**."
-
-    return {"healed": healed, "msg": msg}
+    daily_row_i, daily_row, state = start_or_resume_daily(sheets, player_row=player_row)
+    return True, "OK", player_row_i, player_row, daily_row_i, daily_row, state
