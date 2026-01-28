@@ -1,22 +1,25 @@
 # domain.py
 # -*- coding: utf-8 -*-
-
 from __future__ import annotations
-from dataclasses import dataclass
+
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
 from collections import defaultdict
 
 from services import (
-    SheetsService, S3Service,
+    SheetsService,
     normalize_code, normalize_name, display_name, now_iso, now_fr, fmt_fr,
-    parse_iso_dt, extract_tag, challenge_week_window,
+    parse_iso_dt, extract_tag, challenge_week_window, PARIS_TZ,
 )
 
-# Employés autorisés (on ajoute ACHAT_LIMITEE comme demandé)
+# ==========================================================
+# CONFIG
+# ==========================================================
+
+# Employés autorisés
 EMPLOYEE_ALLOWED_ACTIONS = {"ACHAT", "ACHAT_LIMITEE", "RECYCLAGE"}
 
-# Défis hebdo (tu peux modifier)
+# Défis hebdo
 WEEKLY_CHALLENGES: Dict[int, List[str]] = {
     1: ["Photo devant le SubUrban", "Photo avec un autre client SubUrban", "Photo Bleeter (spot tenue)", "Photo lieu emblématique (Vespucci Beach)"],
     2: ["Photo mur tagué / street art", "Photo outfit rue fréquentée", "Photo devant vitrine SubUrban", "Photo place publique (Legion Square)"],
@@ -45,6 +48,7 @@ WEEKLY_CHALLENGES: Dict[int, List[str]] = {
     ],
 }
 
+# QCM
 QCM_DAILY_QUESTIONS = 5
 QCM_POINTS_PER_GOOD = 2
 QCM_WEEKLY_CAP = 70
@@ -52,12 +56,12 @@ QCM_CHRONO_SEC = 16
 
 # quotas pour les 4 questions après la Q1 fixe
 QCM_DAILY_QUOTA = {"EASY": 2, "MED": 1, "HARD": 1}
-
 QCM_FIXED_QID = "LS_QUARTET_0001"
 
-# ----------------------------
-# VIP Queries
-# ----------------------------
+# ==========================================================
+# VIP QUERIES
+# ==========================================================
+
 def get_all_vips(s: SheetsService) -> List[Dict[str, Any]]:
     return s.get_all_records("VIP")
 
@@ -70,9 +74,10 @@ def find_vip_row_by_code(s: SheetsService, code_vip: str) -> Tuple[Optional[int]
     return None, None
 
 def find_vip_row_by_discord_id(s: SheetsService, discord_id: int) -> Tuple[Optional[int], Optional[Dict[str, Any]]]:
+    target = str(discord_id)
     rows = s.get_all_records("VIP")
     for idx, r in enumerate(rows, start=2):
-        if str(r.get("discord_id", "")).strip() == str(discord_id):
+        if str(r.get("discord_id", "")).strip() == target:
             return idx, r
     return None, None
 
@@ -102,10 +107,11 @@ def get_rank_among_active(s: SheetsService, code_vip: str) -> Tuple[int, int]:
             continue
         c = normalize_code(str(r.get("code_vip", "")))
         try:
-            pts = int(r.get("points", 0))
+            pts = int(r.get("points", 0) or 0)
         except Exception:
             pts = 0
         active.append((pts, c))
+
     active.sort(key=lambda x: x[0], reverse=True)
     total = len(active)
     rank = 0
@@ -119,25 +125,23 @@ def log_rows_for_vip(s: SheetsService, code_vip: str) -> List[Dict[str, Any]]:
     code = normalize_code(code_vip)
     out = []
     for r in s.get_all_records("LOG"):
-        c = normalize_code(str(r.get("code_vip", "")))
-        if c == code:
+        if normalize_code(str(r.get("code_vip", ""))) == code:
             out.append(r)
     return out
 
 def get_last_actions(s: SheetsService, code_vip: str, n: int = 3):
     items = []
     for r in log_rows_for_vip(s, code_vip):
-        t = str(r.get("timestamp", "")).strip()
-        dt = parse_iso_dt(t)
+        dt = parse_iso_dt(str(r.get("timestamp", "")).strip())
         if not dt:
             continue
         a = str(r.get("action_key", r.get("action", ""))).strip().upper()
         try:
-            qty = int(r.get("quantite", 1))
+            qty = int(r.get("quantite", 1) or 1)
         except Exception:
             qty = 1
         try:
-            pts_add = int(r.get("delta_points", 0))
+            pts_add = int(r.get("delta_points", 0) or 0)
         except Exception:
             pts_add = 0
         reason = str(r.get("raison", "") or "").strip()
@@ -145,17 +149,10 @@ def get_last_actions(s: SheetsService, code_vip: str, n: int = 3):
     items.sort(key=lambda x: x[0], reverse=True)
     return items[:n]
 
-def find_vip_row(s, code_vip: str):
-    code_vip = normalize_code(code_vip)
-    rows = s.read_all("VIP")
-    for i, r in enumerate(rows, start=2):  # souvent header ligne 1
-        if normalize_code(str(r.get("code_vip", ""))) == code_vip:
-            return i, r
-    return None, None
+# ==========================================================
+# NIVEAUX
+# ==========================================================
 
-# ----------------------------
-# Niveaux
-# ----------------------------
 def get_levels(s: SheetsService) -> List[Tuple[int, int, str]]:
     rows = s.get_all_records("NIVEAUX")
     levels: List[Tuple[int, int, str]] = []
@@ -208,20 +205,23 @@ def get_all_unlocked_advantages(s: SheetsService, current_level: int) -> str:
     for lvl in range(1, current_level + 1):
         _, raw = get_level_info(s, lvl)
         all_adv.extend(split_avantages(raw))
+
     if not all_adv:
         return "✅ (Aucun avantage débloqué pour le moment)"
+
     seen = set()
     uniq = []
     for a in all_adv:
         if a not in seen:
             seen.add(a)
             uniq.append(a)
+
     return "\n".join([f"✅ {a}" for a in uniq])
 
+# ==========================================================
+# ACTIONS + LIMITES
+# ==========================================================
 
-# ----------------------------
-# Actions + limites
-# ----------------------------
 def get_actions_map(s: SheetsService) -> Dict[str, Dict[str, Any]]:
     rows = s.get_all_records("ACTIONS")
     m: Dict[str, Dict[str, Any]] = {}
@@ -230,7 +230,7 @@ def get_actions_map(s: SheetsService) -> Dict[str, Dict[str, Any]]:
         if not key:
             continue
         try:
-            pu = int(r.get("points_unite", 0))
+            pu = int(r.get("points_unite", 0) or 0)
         except Exception:
             pu = 0
         m[key] = {
@@ -240,6 +240,13 @@ def get_actions_map(s: SheetsService) -> Dict[str, Dict[str, Any]]:
             "regles": str(r.get("regles", "")).strip(),
         }
     return m
+
+def _action_points_unite(s: SheetsService, action_key: str) -> int:
+    m = get_actions_map(s)
+    try:
+        return int(m.get(action_key, {}).get("points_unite", 0) or 0)
+    except Exception:
+        return 0
 
 def count_usage(
     s: SheetsService,
@@ -253,25 +260,31 @@ def count_usage(
     action = (action_key or "").strip().upper()
     rows = log_rows_for_vip(s, code_vip)
     total = 0
+
     for r in rows:
         dt = parse_iso_dt(str(r.get("timestamp", "")).strip())
         if not dt:
             continue
         if not (start_dt <= dt < end_dt):
             continue
+
         a = str(r.get("action_key", "")).strip().upper()
         if a != action:
             continue
+
         raison = str(r.get("raison", "") or "").strip()
         if tag_prefix and tag_value:
             got = extract_tag(raison, tag_prefix)
             if not got or got.lower() != tag_value.lower():
                 continue
+
         try:
-            q = int(r.get("quantite", 1))
+            q = int(r.get("quantite", 1) or 1)
         except Exception:
             q = 1
+
         total += q
+
     return total
 
 def check_action_limit(
@@ -292,11 +305,13 @@ def check_action_limit(
     if ("illimit" in lim_raw) or (lim_raw == ""):
         return True, "", False
 
+    # Fenêtre semaine défi (vendredi 17:00 -> vendredi 17:00) venant de services.challenge_week_window()
     start, end = challenge_week_window()
 
     ev = extract_tag(reason or "", "event:")
     poche = extract_tag(reason or "", "poche:")
 
+    # ex: "3/semaine"
     if "semaine" in lim_raw and "/" in lim_raw:
         try:
             max_per_week = int(lim_raw.split("/")[0].strip())
@@ -351,7 +366,6 @@ def check_action_limit(
 
     return True, "", False
 
-
 def add_points_by_action(
     s: SheetsService,
     code_vip: str,
@@ -366,6 +380,9 @@ def add_points_by_action(
     code = normalize_code(code_vip)
     employee_can = employee_can or EMPLOYEE_ALLOWED_ACTIONS
 
+    if qty <= 0:
+        return False, "La quantité doit être > 0."
+
     # Permissions employés
     if not author_is_hg and action_key not in employee_can:
         return False, f"😾 Action réservée aux HG. Employés: {', '.join(sorted(employee_can))}."
@@ -376,9 +393,6 @@ def add_points_by_action(
         if needs_confirm:
             return False, msg_lim + " Utilise `/vip force` (HG) pour forcer."
         return False, msg_lim
-
-    if qty <= 0:
-        return False, "La quantité doit être > 0."
 
     row_i, vip = find_vip_row_by_code(s, code)
     if not row_i or not vip:
@@ -393,7 +407,7 @@ def add_points_by_action(
         return False, f"Action inconnue: {action_key}."
 
     try:
-        pu = int(actions[action_key]["points_unite"])
+        pu = int(actions[action_key]["points_unite"] or 0)
     except Exception:
         pu = 0
 
@@ -427,12 +441,12 @@ def add_points_by_action(
         "raison": reason or "",
     })
 
-    # ✅ succès: on renvoie un tuple exploitable
     return True, (delta, new_points, old_level, new_level)
 
-# ----------------------------
-# Cave (BAN CREATE)
-# ----------------------------
+# ==========================================================
+# CAVE (VIP_BAN_CREATE)
+# ==========================================================
+
 def split_aliases(raw: str) -> List[str]:
     if not raw:
         return []
@@ -489,10 +503,10 @@ def log_create_blocked(s: SheetsService, staff_id: int, pseudo_attempted: str, d
         "raison": details,
     })
 
+# ==========================================================
+# DEFIS
+# ==========================================================
 
-# ----------------------------
-# Défis
-# ----------------------------
 def week_key_for(k: int) -> str:
     return f"W{k:02d}"
 
@@ -505,8 +519,6 @@ def current_challenge_week_number(now=None) -> int:
     Par défaut: vendredi 17:00.
     """
     import os
-    from datetime import datetime
-
     now = now or now_fr()
 
     start_raw = os.getenv("CHALLENGE_WEEK_START", "2026-01-09 17:00").strip()
@@ -519,7 +531,7 @@ def current_challenge_week_number(now=None) -> int:
         return 1
 
     weeks_since = int(((now - dt0).total_seconds()) // (7 * 24 * 3600))
-    wk = weeks_since + 1  # semaine 1 au démarrage
+    wk = weeks_since + 1
     return max(1, min(12, wk))
 
 def defis_done_count(row: Dict[str, Any]) -> int:
@@ -538,7 +550,6 @@ def ensure_defis_row(s: SheetsService, code_vip: str, wk_key: str, wk_label: str
     if row_i and row:
         return row_i, row
 
-    # DEFIS : week_key, code_vip, d1..d4, completed_at, completed_by, d_notes, week_label
     s.append_by_headers("DEFIS", {
         "week_key": wk_key,
         "code_vip": normalize_code(code_vip),
@@ -561,48 +572,44 @@ def get_week_tasks_for_view(wk: int) -> List[str]:
         if len(tasks) == 1:
             return [tasks[0]] * 12
         return tasks[:12]
+
     tasks = tasks[:4]
     while len(tasks) < 4:
         tasks.append("(Défi non configuré)")
     return tasks
 
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
-from services import PARIS_TZ
+# ==========================================================
+# SALES SUMMARY
+# ==========================================================
 
-def _start_of_day_fr(dt):
+def _start_of_day_fr(dt: datetime) -> datetime:
     dt = dt.astimezone(PARIS_TZ)
     return dt.replace(hour=0, minute=0, second=0, microsecond=0)
 
-def _start_of_week_fr(dt):
-    # semaine = lundi 00:00
+def _start_of_week_fr(dt: datetime) -> datetime:
     dt = _start_of_day_fr(dt)
     return dt - timedelta(days=dt.weekday())
 
-def _start_of_month_fr(dt):
+def _start_of_month_fr(dt: datetime) -> datetime:
     dt = _start_of_day_fr(dt)
     return dt.replace(day=1)
 
 def sales_summary(
     s: SheetsService,
-    period: str = "day",  # "day" | "week" | "month"
-    category: str = "",   # ex: "TSHIRT"
+    period: str = "day",
+    category: str = "",
 ):
     now = now_fr()
-
     if period == "week":
         start = _start_of_week_fr(now)
     elif period == "month":
         start = _start_of_month_fr(now)
     else:
         start = _start_of_day_fr(now)
-
     end = now
 
     rows = s.get_all_records("LOG")
-
-    # staff_id -> stats
-    stats = {}
+    stats: Dict[str, Dict[str, int]] = {}
     total = {"achat_qty": 0, "lim_qty": 0, "delta": 0, "ops": 0}
 
     for r in rows:
@@ -644,93 +651,15 @@ def sales_summary(
 
         stats[staff_id]["delta"] += delta
         stats[staff_id]["ops"] += 1
-
         total["delta"] += delta
         total["ops"] += 1
 
-    # tri: plus gros delta points
     ordered = sorted(stats.items(), key=lambda kv: kv[1]["delta"], reverse=True)
     return start, end, ordered, total
 
+# ==========================================================
 # QCM
-
-# ---- QCM helpers ----
-
-QCM_DAILY_QUESTIONS = 5
-QCM_POINTS_PER_GOOD = 2
-QCM_WEEKLY_CAP = 70
-
-
-def qcm_week_id(now=None) -> str:
-    # identifiant stable: "2026-W04" par ex (ISO week)
-    now = now or now_fr()
-    iso = now.isocalendar()
-    return f"{iso.year}-W{iso.week:02d}"
-
-def qcm_weekly_leaderboard(s: SheetsService, now=None):
-    """
-    Retourne (week_id, ordered)
-    ordered = list[(discord_id:str, stats:dict)] trié par:
-      1) bonnes réponses (desc)
-      2) total répondu (desc)
-      3) temps moyen (asc)
-    Exige un onglet "QCM_LOG" avec colonnes:
-      week_id, discord_id, is_correct (TRUE/FALSE ou 1/0), elapsed_sec (int)
-    """
-    now = now or now_fr()
-    wk = qcm_week_id(now)
-
-    rows = s.get_all_records("QCM_LOG")
-    stats = defaultdict(lambda: {"good": 0, "total": 0, "elapsed": 0})
-
-    for r in rows:
-        if str(r.get("week_id", "")).strip() != wk:
-            continue
-        did = str(r.get("discord_id", "")).strip()
-        if not did:
-            continue
-
-        is_corr = str(r.get("is_correct", "")).strip().lower() in ("true", "1", "yes", "y")
-        try:
-            el = int(r.get("elapsed_sec", 0) or 0)
-        except Exception:
-            el = 0
-
-        st = stats[did]
-        st["total"] += 1
-        st["elapsed"] += max(0, el)
-        if is_corr:
-            st["good"] += 1
-
-    ordered = sorted(
-        stats.items(),
-        key=lambda kv: (-kv[1]["good"], -kv[1]["total"], (kv[1]["elapsed"] / max(1, kv[1]["total"])))
-    )
-    return wk, ordered
-
-def qcm_week_already_awarded(s: SheetsService, week_id: str) -> bool:
-    """
-    Anti double-award: on check dans LOG si on a déjà posé un marqueur.
-    """
-    for r in s.get_all_records("LOG"):
-        ak = str(r.get("action_key", "")).strip().upper()
-        if ak == "QCM_WEEK_AWARDED":
-            reason = str(r.get("raison", "") or "")
-            if f"week:{week_id}" in reason:
-                return True
-    return False
-
-def qcm_mark_week_awarded(s: SheetsService, week_id: str, staff_id: int = 0):
-    s.append_by_headers("LOG", {
-        "timestamp": now_iso(),
-        "staff_id": str(staff_id),
-        "code_vip": "",
-        "action_key": "QCM_WEEK_AWARDED",
-        "quantite": 1,
-        "points_unite": 0,
-        "delta_points": 0,
-        "raison": f"week:{week_id} | QCM weekly awards locked",
-    })
+# ==========================================================
 
 def date_key_fr(dt=None) -> str:
     dt = dt or now_fr()
@@ -741,27 +670,26 @@ def week_key_fr(dt=None) -> str:
     iso = dt.isocalendar()
     return f"{iso.year}-W{iso.week:02d}"
 
-def qcm_get_questions(s):
-    # attend QCM_QUESTIONS
+def qcm_get_questions(s: SheetsService) -> List[Dict[str, Any]]:
     rows = s.get_all_records("QCM_QUESTIONS")
     out = []
     for r in rows:
-        qid = str(r.get("qid","")).strip()
+        qid = str(r.get("qid", "")).strip()
         if not qid:
             continue
         out.append({
             "qid": qid,
-            "question": str(r.get("question","")).strip(),
-            "A": str(r.get("a","")).strip(),
-            "B": str(r.get("b","")).strip(),
-            "C": str(r.get("c","")).strip(),
-            "D": str(r.get("d","")).strip(),
-            "correct": str(r.get("correct","")).strip().upper(),
-            "difficulty": str(r.get("difficulty","")).strip().upper(),
+            "question": str(r.get("question", "")).strip(),
+            "A": str(r.get("a", "")).strip(),
+            "B": str(r.get("b", "")).strip(),
+            "C": str(r.get("c", "")).strip(),
+            "D": str(r.get("d", "")).strip(),
+            "correct": str(r.get("correct", "")).strip().upper(),
+            "difficulty": str(r.get("difficulty", "")).strip().upper(),
         })
     return out
 
-def qcm_pick_daily_set(s, dt=None):
+def qcm_pick_daily_set(s: SheetsService, dt=None) -> List[Dict[str, Any]]:
     dt = dt or now_fr()
     dk = date_key_fr(dt)
 
@@ -772,20 +700,19 @@ def qcm_pick_daily_set(s, dt=None):
         raise RuntimeError(f"Question fixe manquante: {QCM_FIXED_QID}")
 
     fixed = by_id[QCM_FIXED_QID]
-
-    # pool sans la question fixe
     rest = [q for q in pool if q["qid"] != QCM_FIXED_QID]
 
-    # stratification par difficulté
     easy = [q for q in rest if q.get("difficulty") == "EASY"]
-    med  = [q for q in rest if q.get("difficulty") == "MED"]
+    med = [q for q in rest if q.get("difficulty") == "MED"]
     hard = [q for q in rest if q.get("difficulty") == "HARD"]
 
     import random
     rnd = random.Random(dk)  # seed stable
-    rnd.shuffle(easy); rnd.shuffle(med); rnd.shuffle(hard)
+    rnd.shuffle(easy)
+    rnd.shuffle(med)
+    rnd.shuffle(hard)
 
-    picked = []
+    picked: List[Dict[str, Any]] = []
     picked += easy[:QCM_DAILY_QUOTA["EASY"]]
     picked += med[:QCM_DAILY_QUOTA["MED"]]
     picked += hard[:QCM_DAILY_QUOTA["HARD"]]
@@ -795,36 +722,38 @@ def qcm_pick_daily_set(s, dt=None):
 
     return [fixed] + picked
 
-def qcm_today_progress(s, code_vip: str, discord_id: int, dt=None):
+def qcm_today_progress(s: SheetsService, code_vip: str, discord_id: int, dt=None):
     dt = dt or now_fr()
     dk = date_key_fr(dt)
     code = normalize_code(code_vip)
+
     rows = s.get_all_records("QCM_LOG")
     answers = []
     for r in rows:
-        if str(r.get("date_key","")).strip() != dk:
+        if str(r.get("date_key", "")).strip() != dk:
             continue
-        if normalize_code(str(r.get("code_vip",""))) != code:
+        if normalize_code(str(r.get("code_vip", ""))) != code:
             continue
-        if str(r.get("discord_id","")).strip() != str(discord_id):
+        if str(r.get("discord_id", "")).strip() != str(discord_id):
             continue
         try:
             qi = int(r.get("q_index", 0) or 0)
         except Exception:
             qi = 0
         answers.append((qi, r))
-    answers.sort(key=lambda x: x[0])
-    return dk, answers  # answers length = nb questions répondues
 
-def qcm_week_points_awarded(s, code_vip: str, dt=None) -> int:
+    answers.sort(key=lambda x: x[0])
+    return dk, answers
+
+def qcm_week_points_awarded(s: SheetsService, code_vip: str, dt=None) -> int:
     dt = dt or now_fr()
     wk = week_key_fr(dt)
     code = normalize_code(code_vip)
     total = 0
     for r in s.get_all_records("QCM_LOG"):
-        if str(r.get("week_key","")).strip() != wk:
+        if str(r.get("week_key", "")).strip() != wk:
             continue
-        if normalize_code(str(r.get("code_vip",""))) != code:
+        if normalize_code(str(r.get("code_vip", ""))) != code:
             continue
         try:
             total += int(r.get("points_awarded", 0) or 0)
@@ -833,7 +762,7 @@ def qcm_week_points_awarded(s, code_vip: str, dt=None) -> int:
     return total
 
 def qcm_log_answer(
-    s,
+    s: SheetsService,
     *,
     discord_id: int,
     code_vip: str,
@@ -863,7 +792,7 @@ def qcm_log_answer(
     })
 
 def qcm_submit_answer(
-    s,
+    s: SheetsService,
     *,
     discord_id: int,
     code_vip: str,
@@ -876,17 +805,15 @@ def qcm_submit_answer(
     """
     Retourne: (ok, msg, points_awarded, is_correct)
     """
-    # Anti double-submit: si déjà répondu à ce q_index aujourd'hui -> refuse
     dk, answers = qcm_today_progress(s, code_vip, discord_id)
     already = {qi for (qi, _) in answers}
     if q_index in already:
         return False, "Déjà répondu à cette question.", 0, False
 
-    correct = (choice.upper() == str(q.get("correct","")).upper())
+    correct = (choice.upper() == str(q.get("correct", "")).upper())
     week_pts = qcm_week_points_awarded(s, code_vip)
     cap_left = max(0, QCM_WEEKLY_CAP - week_pts)
 
-    # chrono: si trop lent -> 0 point (mais log quand même)
     late = elapsed_sec > int(chrono_limit_sec)
 
     pts = 0
@@ -916,87 +843,136 @@ def qcm_submit_answer(
         meta=meta
     )
 
-    # On crédite des points VIP via action (si >0)
+    # crédite points VIP via ACTIONS (si pts > 0)
     if pts > 0:
-        # 1 bonne réponse = +2 (défini dans ACTIONS)
-        # On utilise add_points_by_action avec qty=1 mais points_unite=2
         add_points_by_action(
             s,
             code_vip,
             "QCM_BONNE_REPONSE",
             1,
-            staff_id=discord_id,  # log staff_id = discord id du VIP (ok)
+            staff_id=discord_id,  # OK: log staff_id = le VIP
             reason=f"QCM {date_key_fr()} q{q_index} {q['qid']}",
             author_is_hg=True
         )
 
     return True, ("✅" if correct else "❌"), pts, correct
 
-def qcm_weekly_leaderboard(s, dt=None):
+def qcm_weekly_leaderboard(s: SheetsService, dt=None):
+    """
+    Retourne (week_key, ordered)
+    ordered = list[(discord_id:str, stats:dict)] trié par:
+      1) bonnes réponses (desc)
+      2) temps moyen (asc)
+    """
     dt = dt or now_fr()
     wk = week_key_fr(dt)
     rows = s.get_all_records("QCM_LOG")
 
-    # discord_id -> {good, total, elapsed_sum}
-    m = {}
+    m: Dict[str, Dict[str, int]] = {}
     for r in rows:
-        if str(r.get("week_key","")).strip() != wk:
+        if str(r.get("week_key", "")).strip() != wk:
             continue
-        did = str(r.get("discord_id","")).strip()
+        did = str(r.get("discord_id", "")).strip()
         if not did:
             continue
         try:
-            is_ok = int(r.get("is_correct",0) or 0) == 1
+            is_ok = int(r.get("is_correct", 0) or 0) == 1
         except Exception:
             is_ok = False
         try:
-            el = int(r.get("elapsed_sec",0) or 0)
+            el = int(r.get("elapsed_sec", 0) or 0)
         except Exception:
             el = 0
 
         if did not in m:
             m[did] = {"good": 0, "total": 0, "elapsed": 0}
+
         m[did]["total"] += 1
-        m[did]["elapsed"] += el
+        m[did]["elapsed"] += max(0, el)
         if is_ok:
             m[did]["good"] += 1
 
-    # tri: plus de bonnes réponses, puis temps moyen plus faible
-    def avg(kv):
-        did, st = kv
-        return (st["elapsed"] / max(1, st["total"]))
-
     ordered = sorted(
         m.items(),
-        key=lambda kv: (kv[1]["good"], -kv[1]["total"], -1/ max(0.0001, (kv[1]["elapsed"]/max(1,kv[1]["total"])))),
-        reverse=True
+        key=lambda kv: (-kv[1]["good"], (kv[1]["elapsed"] / max(1, kv[1]["total"])))
     )
-    # tri ci-dessus est “ok”, mais on peut faire plus clair:
-    ordered = sorted(m.items(), key=lambda kv: (-kv[1]["good"], (kv[1]["elapsed"]/max(1,kv[1]["total"]))))
     return wk, ordered
 
-def qcm_award_weekly_bonuses(s):
+def qcm_week_already_awarded(s: SheetsService, week_id: str) -> bool:
+    for r in s.get_all_records("LOG"):
+        ak = str(r.get("action_key", "")).strip().upper()
+        if ak == "QCM_WEEK_AWARDED":
+            reason = str(r.get("raison", "") or "")
+            if f"week:{week_id}" in reason:
+                return True
+    return False
+
+def qcm_mark_week_awarded(s: SheetsService, week_id: str, staff_id: int = 0):
+    s.append_by_headers("LOG", {
+        "timestamp": now_iso(),
+        "staff_id": str(staff_id),
+        "code_vip": "",
+        "action_key": "QCM_WEEK_AWARDED",
+        "quantite": 1,
+        "points_unite": 0,
+        "delta_points": 0,
+        "raison": f"week:{week_id} | QCM weekly awards locked",
+    })
+
+def qcm_award_weekly_bonuses(s: SheetsService):
+    """
+    Distribue les bonus (actions) selon le leaderboard.
+    Retour: (wk, awarded) où awarded = [(discord_id, points_delta, good)]
+    NOTE: points_delta vient de ACTIONS.points_unite * qty
+    """
     wk, ordered = qcm_weekly_leaderboard(s)
-    # top 3
-    bonuses = [("QCM_BONUS_W1", 20), ("QCM_BONUS_W2", 15), ("QCM_BONUS_W3", 10)]
     awarded = []
+
+    bonuses = ["QCM_BONUS_W1", "QCM_BONUS_W2", "QCM_BONUS_W3"]
+
     for i, (did, st) in enumerate(ordered[:3]):
-        # retrouve code_vip via VIP table
-        row_i, vip = find_vip_row_by_discord_id(s, int(did))
+        try:
+            did_int = int(did)
+        except Exception:
+            continue
+
+        row_i, vip = find_vip_row_by_discord_id(s, did_int)
         if not vip:
             continue
-        code = normalize_code(str(vip.get("code_vip","")))
-        add_points_by_action(s, code, bonuses[i][0], 1, staff_id=0, reason=f"Bonus QCM {wk}", author_is_hg=True)
-        awarded.append((did, bonuses[i][1], st["good"]))
+        code = normalize_code(str(vip.get("code_vip", "")))
 
-    # participation: >=15 bonnes réponses dans la semaine
+        action_key = bonuses[i]
+        pu = _action_points_unite(s, action_key)
+
+        ok, res = add_points_by_action(
+            s, code, action_key, 1,
+            staff_id=0,
+            reason=f"Bonus QCM {wk}",
+            author_is_hg=True
+        )
+        if ok:
+            # delta réel = points_unite*1
+            awarded.append((did, int(pu), int(st.get("good", 0) or 0)))
+
+    # participation: >= 15 bonnes réponses dans la semaine
     for did, st in ordered:
-        if st["good"] >= 15:
-            row_i, vip = find_vip_row_by_discord_id(s, int(did))
-            if not vip:
-                continue
-            code = normalize_code(str(vip.get("code_vip","")))
-            add_points_by_action(s, code, "QCM_PARTICIPANT", 1, staff_id=0, reason=f"Participation QCM {wk}", author_is_hg=True)
+        if int(st.get("good", 0) or 0) < 15:
+            continue
+        try:
+            did_int = int(did)
+        except Exception:
+            continue
+
+        row_i, vip = find_vip_row_by_discord_id(s, did_int)
+        if not vip:
+            continue
+        code = normalize_code(str(vip.get("code_vip", "")))
+
+        add_points_by_action(
+            s, code, "QCM_PARTICIPANT", 1,
+            staff_id=0,
+            reason=f"Participation QCM {wk}",
+            author_is_hg=True
+        )
 
     return wk, awarded
-
