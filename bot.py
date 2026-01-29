@@ -21,8 +21,9 @@ import ui
 import hunt_services as hs
 import hunt_domain as hd
 import hunt_ui
-import hunt_data as hda
 import hunt_rpg as rpg
+
+import hunt_data as hda
 import functools
 
 from datetime import datetime
@@ -270,7 +271,7 @@ async def hunt_avatar(interaction: discord.Interaction):
     is_emp = is_employee(interaction.user)
 
     # ensure player
-    hunt_services.ensure_player(
+    hs.ensure_player(
         sheets,
         discord_id=interaction.user.id,
         vip_code=vip_code,
