@@ -10,8 +10,9 @@ from discord import ui
 import hunt_rpg as rpg
 from services import catify, now_fr, now_iso
 
+
 # ==========================================================
-# Embeds helpers
+# Helpers embeds
 # ==========================================================
 def _mk_embed(
     title: str,
@@ -29,9 +30,31 @@ def _mk_embed(
     return e
 
 
+def _fmt_step_bar(done_steps: int, max_steps: int) -> str:
+    # done_steps = 0..max_steps
+    done_steps = max(0, min(int(done_steps), int(max_steps)))
+    max_steps = max(1, int(max_steps))
+    return "🧩 " + ("■" * done_steps) + ("□" * (max_steps - done_steps)) + f"  ({done_steps}/{max_steps})"
+
+
+def _pending_text(p: Dict[str, Any]) -> str:
+    scene = str(p.get("scene", "rue"))
+    encounter = str(p.get("encounter", "inconnu"))
+    kind = str(p.get("kind", "ENEMY"))
+    diff = str(p.get("difficulty", "MED"))
+    npc = str(p.get("npc", "") or "").strip()
+
+    lines = [
+        f"📍 **Paysage** : `{scene}`",
+        f"👁️ **Rencontre** : **{encounter}** ({kind}, {diff})",
+    ]
+    if npc:
+        lines.append(f"🧑‍🦱 **PNJ** : *{npc}*")
+    return "\n".join(lines)
+
+
 # ==========================================================
-# HUNT HUB (optionnel)
-# - safe: Shop/Inventory placeholders pour éviter les crashs
+# HUB (optionnel / safe)
 # ==========================================================
 class HuntHubView(ui.View):
     def __init__(self, *, sheets, discord_id: int, code_vip: str, pseudo: str, is_employee: bool):
@@ -51,7 +74,7 @@ class HuntHubView(ui.View):
     def build_embed(self) -> discord.Embed:
         desc = (
             f"👤 <@{self.discord_id}> • 🎴 `{self.code_vip}`\n"
-            f"🪪 Pseudo: **{self.pseudo}**\n\n"
+            f"🪪 Pseudo : **{self.pseudo}**\n\n"
             "Choisis une action :\n"
             "• 🗺️ Daily RPG (multi-encounters)\n"
             "• 🎒 Inventaire (placeholder)\n"
@@ -72,17 +95,11 @@ class HuntHubView(ui.View):
 
     @ui.button(label="🎒 Inventaire", style=discord.ButtonStyle.secondary)
     async def btn_inv(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_message(
-            catify("🐾 Inventaire pas encore branché. On le reconnecte après le RPG."),
-            ephemeral=True,
-        )
+        await interaction.response.send_message(catify("🐾 Inventaire pas encore branché."), ephemeral=True)
 
     @ui.button(label="🛒 Shop", style=discord.ButtonStyle.secondary)
     async def btn_shop(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_message(
-            catify("🐾 Shop pas encore branché. On le reconnecte après le RPG."),
-            ephemeral=True,
-        )
+        await interaction.response.send_message(catify("🐾 Shop pas encore branché."), ephemeral=True)
 
     @ui.button(label="✅ Fermer", style=discord.ButtonStyle.success)
     async def btn_close(self, interaction: discord.Interaction, button: ui.Button):
@@ -93,7 +110,6 @@ class HuntHubView(ui.View):
 
 # ==========================================================
 # AVATAR UI (optionnel)
-# - si tu l'utilises dans /hunt avatar
 # ==========================================================
 AVATARS: List[Tuple[str, str]] = [
     ("MAI", ""),
@@ -105,12 +121,7 @@ AVATARS: List[Tuple[str, str]] = [
 class HuntAvatarSelect(ui.Select):
     def __init__(self, view: "HuntAvatarView"):
         opts = [discord.SelectOption(label=tag, value=tag) for tag, _ in AVATARS]
-        super().__init__(
-            placeholder="Choisis ton personnage…",
-            options=opts,
-            min_values=1,
-            max_values=1,
-        )
+        super().__init__(placeholder="Choisis ton personnage…", options=opts, min_values=1, max_values=1)
         self.v = view
 
     async def callback(self, interaction: discord.Interaction):
@@ -174,18 +185,16 @@ class HuntAvatarView(ui.View):
         desc = (
             "Choisis un perso SubUrban.\n"
             "Ton tag apparaîtra en **[MAI]**, **[ROXY]**, etc.\n\n"
-            + (f"Sélection: **{self.selected_tag}**" if self.selected_tag else "Sélection: *(aucune)*")
+            + (f"Sélection : **{self.selected_tag}**" if self.selected_tag else "Sélection : *(aucune)*")
         )
         return _mk_embed("🎭 Choix d’avatar", desc, color=discord.Color.purple(), footer="Mikasa sort la boîte d’étiquettes. 🐾")
 
 
 # ==========================================================
-# DAILY RPG (multi-encounters) — UI complète
-# - se base sur hunt_rpg.py :
-#   - get_player_row
-#   - daily_begin_or_resume(...)
-#   - daily_apply_choice(...)
-#   - (daily_finalize est appelé par rpg quand fini)
+# DAILY RPG UI (multi-encounters)
+# - compatible avec TON hunt_rpg.py :
+#   - begin_or_resume_daily(...)
+#   - apply_daily_choice(...)
 # ==========================================================
 CHOICES: List[Tuple[str, str, discord.ButtonStyle]] = [
     ("🧭 Explorer",  "explore",    discord.ButtonStyle.secondary),
@@ -194,25 +203,7 @@ CHOICES: List[Tuple[str, str, discord.ButtonStyle]] = [
     ("🧤 Voler",     "steal",      discord.ButtonStyle.secondary),
 ]
 
-def _fmt_pending(p: Dict[str, Any]) -> str:
-    scene = str(p.get("scene", "rue"))
-    encounter = str(p.get("encounter", "inconnu"))
-    kind = str(p.get("kind", "ENEMY"))
-    diff = str(p.get("difficulty", "MED"))
-    return f"📍 **Paysage**: `{scene}`\n👁️ **Rencontre**: **{encounter}** ({kind}, {diff})"
-
-def _fmt_step_bar(step: int, max_steps: int) -> str:
-    # 1..max
-    done = max(0, step - 1)
-    return "🧩 " + ("■" * done) + ("□" * max(0, max_steps - done)) + f"  ({done}/{max_steps})"
-
 class HuntDailyView(ui.View):
-    """
-    View daily robuste:
-    - load() -> begin_or_resume (state_json créé/relancé)
-    - boutons -> apply_choice -> edit message + followup note
-    - si finished -> affiche un résumé et désactive les boutons
-    """
     def __init__(self, *, sheets, discord_id: int, code_vip: str, pseudo: str):
         super().__init__(timeout=12 * 60)
         self.s = sheets
@@ -224,11 +215,13 @@ class HuntDailyView(ui.View):
         self.player: Optional[Dict[str, Any]] = None
         self.state: Dict[str, Any] = {}
 
-        self._busy = False  # anti double click
+        self._busy = False  # anti double clic
 
-        # boutons
+        # boutons actions
         for label, key, style in CHOICES:
             self.add_item(HuntDailyChoiceButton(label=label, choice_key=key, style=style))
+
+        # debug + close
         self.add_item(HuntDailyStatusButton())
         self.add_item(HuntCloseButton(label="✅ Fermer"))
 
@@ -246,43 +239,45 @@ class HuntDailyView(ui.View):
         """
         À appeler AVANT d'envoyer la view.
         """
-        row_i, player, state = rpg.daily_begin_or_resume(
-            self.s,
-            discord_id=self.discord_id,
-            vip_code=self.code_vip,
-            pseudo=self.pseudo,
-        )
+        row_i, player, state = rpg.begin_or_resume_daily(self.s, discord_id=self.discord_id)
         self.player_row_i = row_i
         self.player = player
         self.state = state or {}
 
     def build_embed(self) -> discord.Embed:
         st = self.state or {}
-        dk = str(st.get("date_key", ""))
-        arc = str(st.get("arc", ""))
-        step = int(st.get("step", 1) or 1)
-        max_steps = int(st.get("max_steps", 3) or 3)
-        hp = int(st.get("hp", 100) or 100)
-        hp_max = int(st.get("hp_max", 100) or 100)
-        pending = st.get("pending") or {}
 
-        # si jamais state vide (daily terminé/clear) -> message safe
-        if not st or not dk:
+        # si state vide => daily terminé / cleared
+        if not st or not st.get("date_key"):
             desc = (
                 f"👤 <@{self.discord_id}> • `{self.code_vip}`\n\n"
-                "✅ Daily terminé (ou non initialisé).\n"
+                "✅ Daily terminé (ou state_json vide).\n"
                 "Relance la commande si besoin."
             )
             return _mk_embed("🗺️ Daily RPG", desc, color=discord.Color.green(), footer="Mikasa referme le carnet. 🐾")
 
+        dk = str(st.get("date_key", ""))
+        arc = str(st.get("arc", ""))
+        hp = int(st.get("hp", 100) or 100)
+        hp_max = int(st.get("hp_max", 100) or 100)
+        step = int(st.get("step", 1) or 1)
+        max_steps = int(st.get("max_steps", 3) or 3)
+
+        # done_steps = step-1 (car step = étape actuelle à jouer)
+        done_steps = max(0, step - 1)
+
+        pending = st.get("pending") or {}
+        pending_block = _pending_text(pending)
+
         desc = (
-            f"👤 <@{self.discord_id}> • `{self.code_vip}`\n"
-            f"🏷️ Arc: **{arc}**\n"
-            f"❤️ HP: **{hp}/{hp_max}**\n"
-            f"{_fmt_step_bar(step, max_steps)}\n\n"
-            f"{_fmt_pending(pending)}\n\n"
-            "Choisis une action. (Chaque clic est sauvegardé dans `state_json`.)"
+            f"👤 <@{self.discord_id}> • 🎴 `{self.code_vip}`\n"
+            f"🏷️ Arc : **{arc}**\n"
+            f"❤️ HP : **{hp}/{hp_max}**\n"
+            f"{_fmt_step_bar(done_steps, max_steps)}\n\n"
+            f"{pending_block}\n\n"
+            "Choisis une action. Chaque clic est enregistré dans `state_json`."
         )
+
         e = _mk_embed(
             f"🗺️ Daily RPG • {dk}",
             desc,
@@ -290,7 +285,7 @@ class HuntDailyView(ui.View):
             footer="Aucun retour arrière. Mikasa note tout. 🐾",
         )
 
-        # petit journal (2 dernières entrées)
+        # mini log (2 dernières)
         logs = st.get("log") or []
         if isinstance(logs, list) and logs:
             last = logs[-2:] if len(logs) >= 2 else logs
@@ -298,9 +293,9 @@ class HuntDailyView(ui.View):
             for x in last:
                 try:
                     sstep = x.get("step", "?")
-                    res = x.get("result", "?")
                     enc = x.get("encounter", "?")
                     ch = x.get("choice", "?")
+                    res = x.get("result", "?")
                     lines.append(f"• #{sstep} **{enc}** → `{ch}` = **{res}**")
                 except Exception:
                     continue
@@ -309,15 +304,11 @@ class HuntDailyView(ui.View):
 
         return e
 
-    async def _edit_message(self, interaction: discord.Interaction) -> None:
-        # rebuild: ici on ne change pas dynamiquement les items, on désactive seulement si fini
-        await interaction.message.edit(embed=self.build_embed(), view=self)
-
-    async def _disable_all(self, interaction: discord.Interaction, *, content: str = ""):
+    async def _disable_all(self, interaction: discord.Interaction, *, embed: Optional[discord.Embed] = None):
         for item in self.children:
             item.disabled = True
         try:
-            await interaction.message.edit(content=content or None, embed=self.build_embed(), view=self)
+            await interaction.message.edit(embed=embed, view=self)
         except Exception:
             pass
 
@@ -328,51 +319,41 @@ class HuntDailyView(ui.View):
 
         try:
             if self.player_row_i is None or self.player is None:
-                # sécurité si load() pas appelé
                 await self.load()
 
-            # si state vide -> refuse propre
             if not self.state or not self.state.get("date_key"):
                 return await interaction.followup.send(catify("😾 Daily indisponible. Relance la commande."), ephemeral=True)
 
-            # exécute la logique rpg
-            new_state, outcome = rpg.daily_apply_choice(
+            # appelle TON rpg.apply_daily_choice
+            new_state, outcome = rpg.apply_daily_choice(
                 self.s,
                 player_row_i=int(self.player_row_i),
-                player=self.player,
-                state=self.state,
+                player=dict(self.player),
+                state=dict(self.state),
                 discord_id=self.discord_id,
                 choice=choice_key,
             )
 
-            # daily_apply_choice peut retourner {} si terminé (state cleared)
             finished = bool(outcome.get("finished")) if isinstance(outcome, dict) else False
 
             if finished:
-                # on marque localement pour afficher un résumé propre
-                self.state = {}  # state cleared côté sheet déjà
-                summary = self._build_finished_embed(outcome)
-                await self._disable_all(interaction, content="")
-                await interaction.message.edit(embed=summary, view=self)
+                # state_json a été clear côté rpg
+                self.state = {}
+                final_embed = self._build_finished_embed(outcome)
+                await self._disable_all(interaction, embed=final_embed)
+                return await interaction.followup.send(catify("✅ Daily terminé. Récompenses créditées."), ephemeral=True)
 
-                # followup
-                return await interaction.followup.send(
-                    catify("✅ Daily terminé. Récompenses créditées."),
-                    ephemeral=True,
-                )
-
-            # sinon: update state local + refresh embed
+            # mise à jour locale
             self.state = new_state or self.state
 
-            # message note
-            note = self._format_outcome_line(outcome)
-
-            # edit message principal
+            # edit du message principal
             try:
-                await self._edit_message(interaction)
+                await interaction.message.edit(embed=self.build_embed(), view=self)
             except Exception:
                 pass
 
+            # note ephemeral
+            note = self._format_outcome_note(outcome)
             await interaction.followup.send(note, ephemeral=True)
 
         except Exception as e:
@@ -380,16 +361,16 @@ class HuntDailyView(ui.View):
         finally:
             self._busy = False
 
-    def _format_outcome_line(self, outcome: Dict[str, Any]) -> str:
-        res = str(outcome.get("result", ""))
+    def _format_outcome_note(self, outcome: Dict[str, Any]) -> str:
+        mark = str(outcome.get("mark", ""))
+        score = outcome.get("score", None)
+        target = outcome.get("target", None)
         hp_delta = int(outcome.get("hp_delta", 0) or 0)
         money = int(outcome.get("money_delta", 0) or 0)
         xp = int(outcome.get("xp_delta", 0) or 0)
         jail = int(outcome.get("jail_hours", 0) or 0)
-        score = outcome.get("score", None)
-        target = outcome.get("target", None)
 
-        parts = [("✅" if res == "WIN" else "❌") + f" Résultat: **{res}**"]
+        parts = [f"{mark} Réponse enregistrée."]
         if score is not None and target is not None:
             parts.append(f"🎲 Score: **{score}** / cible **{target}**")
         if hp_delta:
@@ -401,30 +382,30 @@ class HuntDailyView(ui.View):
         return "\n".join(parts)
 
     def _build_finished_embed(self, outcome: Dict[str, Any]) -> discord.Embed:
-        money = int(outcome.get("money_total", 0) or 0)
-        xp = int(outcome.get("xp_total", 0) or 0)
-        jail = int(outcome.get("jail_hours", 0) or 0)
+        dk = str(outcome.get("date_key", "") or "")
+        arc = str(outcome.get("arc", "") or "")
+        boss_hint = str(outcome.get("boss_hint", "") or "")
         hp_end = int(outcome.get("hp_end", 0) or 0)
-        arc = str(outcome.get("arc", ""))
-        boss_next = str(outcome.get("boss_next", ""))
+        money_total = int(outcome.get("money_total", 0) or 0)
+        xp_total = int(outcome.get("xp_total", 0) or 0)
+        jail_hours = int(outcome.get("jail_hours", 0) or 0)
 
         desc = (
             f"👤 <@{self.discord_id}> • `{self.code_vip}`\n"
-            f"🏷️ Arc: **{arc}**\n\n"
-            f"💵 Gain total: **+{money}** $HUNT\n"
-            f"✨ XP total: **+{xp}**\n"
-            f"❤️ HP fin: **{hp_end}**\n"
-            + (f"🚓 Jail: **{jail}h**\n" if jail > 0 else "")
-            + (f"\n👑 Boss lié à l’arc: **{boss_next}**" if boss_next else "")
+            f"📅 Date : **{dk}**\n"
+            f"🏷️ Arc : **{arc}**\n\n"
+            f"💵 Gain total : **+{money_total}** $HUNT\n"
+            f"✨ XP total : **+{xp_total}**\n"
+            f"❤️ HP fin : **{hp_end}**\n"
+            + (f"🚓 Jail : **{jail_hours}h**\n" if jail_hours > 0 else "")
+            + (f"\n👑 Boss lié à l’arc : **{boss_hint}**" if boss_hint else "")
         )
-
-        e = _mk_embed(
+        return _mk_embed(
             "✅ Daily RPG terminé",
             desc,
             color=discord.Color.green(),
             footer="Mikasa tamponne la feuille de route. 🐾",
         )
-        return e
 
 
 class HuntDailyChoiceButton(ui.Button):
@@ -434,15 +415,14 @@ class HuntDailyChoiceButton(ui.Button):
 
     async def callback(self, interaction: discord.Interaction):
         view: HuntDailyView = self.view  # type: ignore
-        # ACK unique: defer, puis followup + message.edit
+        # ACK 1 seule fois (safe)
         await interaction.response.defer(ephemeral=True)
         await view.apply_choice(interaction, self.choice_key)
 
 
 class HuntDailyStatusButton(ui.Button):
     """
-    Petit bouton “📌 Status” : renvoie le state_json actuel (résumé) en ephemeral
-    Utile pour debug si tu veux vérifier que state_json se remplit bien.
+    Bouton debug : affiche state_json brut (coupé) pour vérifier que tout se remplit.
     """
     def __init__(self):
         super().__init__(label="📌 Status", style=discord.ButtonStyle.secondary)
@@ -451,10 +431,6 @@ class HuntDailyStatusButton(ui.Button):
         view: HuntDailyView = self.view  # type: ignore
         await interaction.response.defer(ephemeral=True)
 
-        if view.player_row_i is None:
-            return await interaction.followup.send("❌ State non chargé.", ephemeral=True)
-
-        # relis la ligne player pour afficher le state_json brut (coupé)
         row_i, player = rpg.get_player_row(view.s, view.discord_id)
         if not row_i or not player:
             return await interaction.followup.send("❌ Player introuvable.", ephemeral=True)
@@ -463,7 +439,7 @@ class HuntDailyStatusButton(ui.Button):
         if not raw.strip():
             return await interaction.followup.send("✅ state_json vide (daily terminé ou non lancé).", ephemeral=True)
 
-        txt = raw if len(raw) <= 1500 else (raw[:1500] + "…")
+        txt = raw if len(raw) <= 1700 else (raw[:1700] + "…")
         await interaction.followup.send(f"```json\n{txt}\n```", ephemeral=True)
 
 
