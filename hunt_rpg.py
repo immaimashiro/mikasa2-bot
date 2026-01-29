@@ -11,6 +11,21 @@ from services import SheetsService, now_fr, now_iso, PARIS_TZ
 T_PLAYERS = "HUNT_PLAYERS"
 T_DAILIES = "HUNT_DAILIES"  # si tu n'as pas encore l'onglet, tu peux commenter l'append plus bas
 
+ENCOUNTER_IMAGES = {
+  "Voyou": "https://raw.githubusercontent.com/immaimashiro/mikasa2-bot/main/Voyou.png",
+  "Rat mutant": "https://raw.githubusercontent.com/immaimashiro/mikasa2-bot/main/Rat_Mutant.png",
+  #"Luxus": "https://raw.githubusercontent.com/immaimashiro/mikasa2-bot/main/Luxus.png",
+  #"Attenin": "https://raw.githubusercontent.com/immaimashiro/mikasa2-bot/main/Attenin.png",
+  "Sanglier": "https://raw.githubusercontent.com/immaimashiro/mikasa2-bot/main/Sanglier.png",
+  "Chien errant": "https://raw.githubusercontent.com/immaimashiro/mikasa2-bot/main/Chien_errant.png",
+  #"Dodo Lasaumure": "https://raw.githubusercontent.com/immaimashiro/mikasa2-bot/main/Lasaumure.png",
+  #"Shakir": "https://raw.githubusercontent.com/immaimashiro/mikasa2-bot/main/Shakir.png",
+  "Coyotte": "https://raw.githubusercontent.com/immaimashiro/mikasa2-bot/main/Coyotte.png",
+  #"Mike": "https://raw.githubusercontent.com/immaimashiro/mikasa2-bot/main/Mike.png",
+  #"Clayton": "https://raw.githubusercontent.com/immaimashiro/mikasa2-bot/main/Clayton.png",
+  "Puma": "https://raw.githubusercontent.com/immaimashiro/mikasa2-bot/main/Puma.png",
+}
+
 # ==========================================================
 # JSON helpers (robustes)
 # ==========================================================
