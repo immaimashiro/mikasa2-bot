@@ -22,7 +22,7 @@ import hunt_services as hs
 import hunt_domain as hd
 import hunt_ui
 import hunt_data as hda
-
+import hunt_rpg as rpg
 import functools
 
 from datetime import datetime
@@ -1709,7 +1709,7 @@ async def hunt_daily(interaction: discord.Interaction):
         )
 
     tester = hs.is_tester(interaction.user.id)
-    date_key = hs.today_key()
+    date_key = rpg.today_key()
 
     # anti double daily
     if not tester and hd.daily_exists(sheets, interaction.user.id, date_key):
