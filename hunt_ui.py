@@ -126,10 +126,11 @@ class HuntHubView(ui.View):
 # AVATAR
 # ==========================================================
 AVATARS: List[Tuple[str, str]] = [
-    ("MAI", "https://i.imgur.com/1Q9Z1ZC.png"),
-    ("ROXY", "https://i.imgur.com/1Q9Z1ZC.png"),
-    ("DODO", "https://i.imgur.com/1Q9Z1ZC.png"),
-    ("THIB", "https://i.imgur.com/1Q9Z1ZC.png"),
+    ("MAI", "https://imgur.com/a2uXTCr"),
+    ("ROXY", "https://imgur.com/IP53zgQ"),
+    ("LYA", "https://imgur.com/BoCNT1O"),
+    ("DRACO", "https://imgur.com/UgsBzKU"),
+    ("ZACKO", "https://imgur.com/zHGjjb1"),
 ]
 
 class HuntAvatarSelect(ui.Select):
