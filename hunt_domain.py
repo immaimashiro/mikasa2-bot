@@ -76,47 +76,51 @@ def get_player_row(s: SheetsService, discord_id: int) -> Tuple[Optional[int], Op
             return idx, r
     return None, None
 
-def ensure_player(
-    s: SheetsService,
-    *,
-    discord_id: int,
-    vip_code: str,
-    pseudo: str,
-    is_employee: bool = False
-) -> Tuple[int, Dict[str, Any]]:
-    """
-    Crée le player s'il n'existe pas.
-    Colonnes attendues minimales dans HUNT_PLAYERS:
-    discord_id, vip_code, pseudo, is_employee, hp, hp_max, xp, xp_total,
-    hunt_dollars, inventory_json, state_json, last_daily_date, updated_at, created_at
-    """
-    row_i, row = get_player_row(s, discord_id)
+def ensure_player(sheets, *, discord_id: int, vip_code: str, pseudo: str, is_employee: bool = False):
+    row_i, row = rpg.get_player_row(sheets, discord_id)
     if row_i and row:
         return row_i, row
 
     payload = {
         "discord_id": str(discord_id),
-        "vip_code": str(vip_code),
+        "code_vip": str(vip_code),
         "pseudo": str(pseudo),
         "is_employee": "1" if is_employee else "0",
-        "hp": 100,
-        "hp_max": 100,
+        "avatar_tag": "",
+        "avatar_url": "",
+        "ally_tag": "",
+        "ally_url": "",
+        "level": 1,
         "xp": 0,
         "xp_total": 0,
+        "stats_hp": 0,
+        "stats_atk": 0,
+        "stats_def": 0,
+        "stats_per": 0,
+        "stats_cha": 0,
+        "stats_luck": 0,
         "hunt_dollars": 0,
-        "inventory_json": "{}",
-        "state_json": "",          # <- on va s'en servir pour le daily robuste
+        "heat": 0,
+        "jail_until": "",
         "last_daily_date": "",
+        "weekly_week_key": "",
+        "weekly_wins": 0,
         "total_runs": 0,
-        "updated_at": now_iso(),
+        "total_wins": 0,
+        "total_deaths": 0,
+        "inventory_json": "{}",
         "created_at": now_iso(),
+        "updated_at": now_iso(),
+        "equipped_json": "{}",
+        "hp": 100,
+        "hp_max": 100,
+        "state_json": "",
     }
-    s.append_by_headers(T_PLAYERS, payload)
 
-    row_i2, row2 = get_player_row(s, discord_id)
-    if not row_i2 or not row2:
-        raise RuntimeError("ensure_player: impossible de relire la ligne créée.")
+    sheets.append_by_headers(rpg.T_PLAYERS, payload)
+    row_i2, row2 = rpg.get_player_row(sheets, discord_id)
     return row_i2, row2
+
 # ==========================================================
 # PLAYER HELPERS (alignés sur hs.ensure_player)
 # ==========================================================
