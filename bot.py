@@ -1692,144 +1692,98 @@ async def hunt_daily(interaction: discord.Interaction):
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return await interaction.followup.send("❌ À utiliser sur le serveur.", ephemeral=True)
 
-    # VIP lié obligatoire
+    # --------------------------------------------------
+    # 1) VIP lié obligatoire
+    # --------------------------------------------------
     row_i, vip = domain.find_vip_row_by_discord_id(sheets, interaction.user.id)
     if not row_i or not vip:
-        return await interaction.followup.send("😾 Ton Discord n’est pas lié à un VIP. Demande au staff.", ephemeral=True)
+        return await interaction.followup.send(
+            "😾 Ton Discord n’est pas lié à un VIP. Demande au staff.",
+            ephemeral=True
+        )
 
     vip_code = domain.normalize_code(str(vip.get("code_vip", "")))
     pseudo = domain.display_name(vip.get("pseudo", vip_code))
     is_emp = is_employee(interaction.user)
 
-    # ensure player
-    p_row_i, player = hd.get_player_row(sheets, interaction.user.id)
-    if not p_row_i or not player:
-        p_row_i, player = hd.ensure_player(
-            sheets, discord_id=interaction.user.id, vip_code=vip_code, pseudo=pseudo, is_employee=is_emp
-        )
-
     tester = hs.is_tester(interaction.user.id)
     date_key = rpg.today_key()
 
-    # anti double daily
-    if not tester and hd.daily_exists(sheets, interaction.user.id, date_key):
-        return await interaction.followup.send("😾 Tu as déjà fait ta quête aujourd’hui. Reviens demain.", ephemeral=True)
+    # --------------------------------------------------
+    # 2) Ensure player (obligatoire pour state_json)
+    #    - on crée si absent
+    # --------------------------------------------------
+    p_row_i, player = rpg.get_player_row(sheets, interaction.user.id)
+    if not p_row_i or not player:
+        # Si tu as ensure_player dans hd (hunt_domain/hunt_services), garde ça :
+        p_row_i, player = hd.ensure_player(
+            sheets,
+            discord_id=interaction.user.id,
+            vip_code=vip_code,
+            pseudo=pseudo,
+            is_employee=is_emp
+        )
+        # Relire via rpg (au cas où ton ensure_player écrit dans HUNT_PLAYERS)
+        p_row_i, player = rpg.get_player_row(sheets, interaction.user.id)
 
-    # prison check
-    in_jail, until = hd.is_in_jail(player)
+    if not p_row_i or not player:
+        return await interaction.followup.send("❌ Impossible de créer/charger ton profil HUNT.", ephemeral=True)
+
+    # --------------------------------------------------
+    # 3) Prison check
+    # --------------------------------------------------
+    in_jail, until = rpg.is_in_jail(player)
     if in_jail and not tester:
         return await interaction.followup.send(
-            f"🔒 Tu es en prison jusqu’à `{until}`. (max 12h)\nReviens plus tard…",
+            f"🔒 Tu es en prison jusqu’à `{until}`.\nReviens plus tard…",
             ephemeral=True
         )
 
-    # require avatar (pour l’immersion)
-    avatar_tag = str(player.get("avatar_tag","")).strip()
-    avatar_url = str(player.get("avatar_url","")).strip()
+    # --------------------------------------------------
+    # 4) Avatar requis (immersion)
+    # --------------------------------------------------
+    avatar_tag = str(player.get("avatar_tag", "")).strip()
     if not avatar_tag:
-        return await interaction.followup.send("🎭 Choisis d’abord ton perso avec **/hunt avatar**.", ephemeral=True)
+        return await interaction.followup.send(
+            "🎭 Choisis d’abord ton perso avec **/hunt avatar**.",
+            ephemeral=True
+        )
 
-    # rolls
-    d20_1 = random.randint(1, 20)
-    d20_2 = random.randint(1, 20)
-    rolls = f"d20={d20_1}, d20={d20_2}"
+    # --------------------------------------------------
+    # 5) Anti double daily (IMPORTANT)
+    #
+    # Problème à éviter:
+    # - on DOIT autoriser la reprise si state_json daily existe aujourd'hui
+    # - mais on DOIT bloquer si last_daily_date == today ET pas de state en cours
+    # --------------------------------------------------
+    state = rpg.load_daily_state(player)
+    has_active_state_today = rpg.is_active_daily(state, date_key)
 
-    # story seed
-    encounter = random.choice(["coyote", "voyou", "rat mutant", "puma", "chien errant"])
-    action = random.choice(["explorer", "négocier", "attaquer", "voler"])
-    result = "WIN" if (d20_1 + d20_2) >= 22 else "LOSE"
+    if not tester:
+        # si déjà fait aujourd'hui et pas de run à reprendre => refuse
+        if rpg.daily_already_done(player, date_key) and not has_active_state_today:
+            return await interaction.followup.send(
+                "😾 Tu as déjà fait ta quête aujourd’hui. Reviens demain.",
+                ephemeral=True
+            )
 
-    jail_hours = 0
-    if action == "voler":
-        # risque prison
-        if (d20_1 <= 5) and (not tester):
-            jail_hours = random.randint(2, 12)
-
-    money = hs.money_reward()
-    xp = hs.xp_reward()
-
-    # loose => pénalité soft
-    money_delta = money if result == "WIN" else max(5, money // 3)
-    xp_delta = xp if result == "WIN" else max(2, xp // 3)
-
-    # loot
-    gold_bonus = bool(is_emp)  # tu avais demandé + de chances employés
-    loots = hs.roll_loot(gold_bonus=gold_bonus)
-    rewards = {"loot": loots, "hunt_dollars": money_delta, "xp": xp_delta}
-
-    # update player currency + xp + inventory + stats
-    inv = hs.inv_load(str(player.get("inventory_json","")))
-    for item_id, qty in loots:
-        hs.inv_add(inv, item_id, qty)
-
-    # update sheet
-    try:
-        cur_money = int(player.get("hunt_dollars", 0) or 0)
-    except Exception:
-        cur_money = 0
-    try:
-        cur_xp = int(player.get("xp", 0) or 0)
-    except Exception:
-        cur_xp = 0
-    try:
-        cur_xpt = int(player.get("xp_total", 0) or 0)
-    except Exception:
-        cur_xpt = 0
-
-    new_money = cur_money + money_delta
-    new_xp = cur_xp + xp_delta
-    new_xpt = cur_xpt + xp_delta
-
-    sheets.update_cell_by_header(hs.T_PLAYERS, p_row_i, "hunt_dollars", new_money)
-    sheets.update_cell_by_header(hs.T_PLAYERS, p_row_i, "xp", new_xp)
-    sheets.update_cell_by_header(hs.T_PLAYERS, p_row_i, "xp_total", new_xpt)
-    sheets.update_cell_by_header(hs.T_PLAYERS, p_row_i, "inventory_json", hs.inv_dump(inv))
-    sheets.update_cell_by_header(hs.T_PLAYERS, p_row_i, "last_daily_date", date_key)
-    sheets.update_cell_by_header(hs.T_PLAYERS, p_row_i, "total_runs", int(player.get("total_runs",0) or 0) + 1)
-
-    if jail_hours > 0:
-        hd.apply_jail(sheets, p_row_i, jail_hours)
-
-    # append daily row
-    hd.append_daily(
-        sheets,
-        date_key=date_key,
+    # --------------------------------------------------
+    # 6) Ouvrir la View Daily multi-encounters
+    #    -> begin_or_resume_daily va créer/mettre à jour state_json
+    # --------------------------------------------------
+    view = ui.HuntDailyView(
+        sheets=sheets,
         discord_id=interaction.user.id,
-        vip_code=vip_code,
-        result=result,
-        story=f"{action}:{encounter}",
-        rolls=rolls,
-        rewards_json=json.dumps(rewards, ensure_ascii=False),
-        money_delta=money_delta,
-        xp_delta=xp_delta,
-        jail_delta_hours=jail_hours
+        code_vip=vip_code,
+        pseudo=pseudo,
     )
+    await view.load()
 
-    # embed rendu
-    title = f"🗺️ Hunt Daily • [{avatar_tag}]"
-    desc = (
-        f"👤 {interaction.user.mention} • 🎴 `{vip_code}`\n"
-        f"🧭 Action: **{action}**\n"
-        f"👁️ Rencontre: **{encounter}**\n"
-        f"🎲 Jets: `{rolls}`\n\n"
-        f"Résultat: **{result}**\n"
-        f"💰 +{money_delta} Hunt$ • ✨ +{xp_delta} XP"
-    )
-    if jail_hours > 0:
-        desc += f"\n\n🚔 Mauvais plan… **prison {jail_hours}h**."
+    # Avatar thumb (optionnel : la view n'en dépend pas)
+    # Ton hunt_ui.py build_embed ne met pas automatiquement l'avatar,
+    # mais tu peux le faire dans hunt_ui.py si tu veux.
+    await interaction.followup.send(embed=view.build_embed(), view=view, ephemeral=True)
 
-    emb = discord.Embed(title=title, description=desc, color=discord.Color.blurple())
-    if avatar_url:
-        emb.set_thumbnail(url=avatar_url)
-
-    loot_lines = []
-    for item_id, qty in loots:
-        meta = hs.LOOT_ITEMS.get(item_id, {"label": item_id})
-        loot_lines.append(f"• {meta['label']} x{qty}")
-    emb.add_field(name="🎁 Loot", value=("\n".join(loot_lines) if loot_lines else "—"), inline=False)
-    emb.set_footer(text="Mikasa fait grincer le dé… 🐾")
-
-    await interaction.followup.send(embed=emb, ephemeral=True)
 
 
 # ----------------------------
