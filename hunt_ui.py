@@ -9,6 +9,8 @@ from discord import ui
 import hunt_rpg as rpg
 from services import catify, now_fr
 
+img = ENCOUNTER_IMAGES.get(encounter) or ENCOUNTER_IMAGES.get(boss_hint)
+if img: embed.set_thumbnail(url=img)
 
 # ==========================================================
 # Helpers
